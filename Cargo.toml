@@ -4,6 +4,8 @@ version = "0.0.1"
 authors = ["westbot <82739021+westbot657@users.noreply.github.com>"]
 description = "A collection of helper macros for use with jni"
 edition = "2024"
+license = "MIT"
+readme = "README.md"
 
 [lib]
 proc-macro = true
