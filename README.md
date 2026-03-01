@@ -12,7 +12,7 @@ java_class_decl! {
     class MyClass {
         native int nativeAdd(int, int);
         
-        java.lang.String getName();
+        String getName();
     }
 }
 
