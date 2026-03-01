@@ -1,0 +1,16 @@
+[package]
+name = "java-jni-extras"
+version = "0.0.1"
+authors = ["westbot <82739021+westbot657@users.noreply.github.com>"]
+description = "A collection of helper macros for use with jni"
+edition = "2024"
+
+[lib]
+proc-macro = true
+crate-type = ["proc-macro"]
+
+[dependencies]
+quote = "1.0.44"
+proc-macro2 = "1.0.106"
+syn = "2.0.117"
+
