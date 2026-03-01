@@ -118,18 +118,21 @@ impl JavaType {
         }
     }
 
-    fn extract_return(&self) -> TokenStream2 {
+    fn extract_return(&self, call: TokenStream2) -> TokenStream2 {
         match self {
-            JavaType::Void => quote! { ; },
-            JavaType::Boolean => quote! { .z() },
-            JavaType::Byte => quote! { .b() },
-            JavaType::Char => quote! { .c() },
-            JavaType::Short => quote! { .s() },
-            JavaType::Int => quote! { .i() },
-            JavaType::Long => quote! { .j() },
-            JavaType::Float => quote! { .f() },
-            JavaType::Double => quote! { .d() },
-            JavaType::Object(_) | JavaType::Array(_) => quote! { .l() },
+            JavaType::Void => quote! { #call; },
+            JavaType::Boolean => quote! { #call.z() },
+            JavaType::Byte => quote! { #call.b() },
+            JavaType::Char => quote! { #call.c() },
+            JavaType::Short => quote! { #call.s() },
+            JavaType::Int => quote! { #call.i() },
+            JavaType::Long => quote! { #call.j() },
+            JavaType::Float => quote! { #call.f() },
+            JavaType::Double => quote! { #call.d() },
+            JavaType::Object(name) if name == "String" => {
+                quote!( let o = #call.l()?; Ok(JString::cast_local(env, o)?.to_string()) )
+            }
+            JavaType::Object(_) | JavaType::Array(_) => quote! { #call.l() },
         }
     }
 
@@ -339,10 +342,10 @@ fn generate_method(
             Ok(())
         },
         _ => {
-            let extract = method.return_type.extract_return();
+            let extract = method.return_type.extract_return(call);
             quote! {
                 #(#string_conversions)*
-                #call #extract
+                #extract
             }
 
         }
