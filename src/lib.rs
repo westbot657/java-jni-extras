@@ -10,12 +10,18 @@ struct JavaClass {
     methods: Vec<JavaMethod>,
 }
 
-struct JavaMethod {
-    is_static: bool,
-    is_native: bool,
-    return_type: JavaType,
-    name: Ident,
-    params: Vec<JavaParam>,
+enum JavaMethod {
+    Constructor {
+        name: Ident,
+        params: Vec<JavaParam>,
+    },
+    Method {
+        is_static: bool,
+        is_native: bool,
+        return_type: JavaType,
+        name: Ident,
+        params: Vec<JavaParam>,
+    },
 }
 
 struct JavaParam {
@@ -211,6 +217,7 @@ impl Parse for JavaMethod {
         let mut is_static = false;
         let mut is_native = false;
 
+        // parse modifiers
         loop {
             if input.peek(Token![static]) {
                 input.parse::<Token![static]>()?;
@@ -229,26 +236,44 @@ impl Parse for JavaMethod {
             }
         }
 
-        let return_type = parse_java_type(input)?;
-        let name: Ident = input.parse()?;
+        // peek: if next is Ident followed immediately by '(' it's a constructor
+        let is_constructor = input.peek(Ident) && {
+            let fork = input.fork();
+            let _: Ident = fork.parse()?;
+            fork.peek(syn::token::Paren)
+        };
 
-        let content;
-        syn::parenthesized!(content in input);
-
-        let mut params = Vec::new();
-        while !content.is_empty() {
-            let ty = parse_java_type(&content)?;
-            let param_name: Ident = content.parse()?;
-            params.push(JavaParam { ty, name: param_name });
-            if content.peek(Token![,]) {
-                content.parse::<Token![,]>()?;
-            }
+        if is_constructor {
+            let name: Ident = input.parse()?;
+            let content;
+            syn::parenthesized!(content in input);
+            let params = parse_params(&content)?;
+            input.parse::<Token![;]>()?;
+            return Ok(JavaMethod::Constructor { name, params });
         }
 
+        let return_type = parse_java_type(input)?;
+        let name: Ident = input.parse()?;
+        let content;
+        syn::parenthesized!(content in input);
+        let params = parse_params(&content)?;
         input.parse::<Token![;]>()?;
 
-        Ok(JavaMethod { is_static, is_native, return_type, name, params })
+        Ok(JavaMethod::Method { is_static, is_native, return_type, name, params })
     }
+}
+
+fn parse_params(content: ParseStream) -> Result<Vec<JavaParam>> {
+    let mut params = Vec::new();
+    while !content.is_empty() {
+        let ty = parse_java_type(content)?;
+        let name: Ident = content.parse()?;
+        params.push(JavaParam { ty, name });
+        if content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        }
+    }
+    Ok(params)
 }
 
 impl Parse for JavaClass {
@@ -295,24 +320,27 @@ fn class_path(package: &str, name: &str) -> String {
 
 fn generate_method(
     class_path_lit: &LitStr,
-    method: &JavaMethod,
+    is_static: bool,
+    return_type: &JavaType,
+    name: &Ident,
+    params: &[JavaParam]
 ) -> TokenStream2 {
-    let method_name = &method.name;
+    let method_name = name;
     let method_name_str = method_name.to_string();
 
-    let param_sig: String = method.params.iter().map(|p| p.ty.to_jni_sig()).collect();
-    let return_sig = method.return_type.to_jni_sig();
+    let param_sig: String = params.iter().map(|p| p.ty.to_jni_sig()).collect();
+    let return_sig = return_type.to_jni_sig();
     let full_sig = format!("({}){}", param_sig, return_sig);
     let sig_lit = LitStr::new(&full_sig, Span::call_site());
     let method_name_lit = LitStr::new(&method_name_str, Span::call_site());
 
-    let rust_params: Vec<TokenStream2> = method.params.iter().map(|p| {
+    let rust_params: Vec<TokenStream2> = params.iter().map(|p| {
         let pname = &p.name;
         let pty = p.ty.to_rust_type();
         quote! { #pname: #pty }
     }).collect();
 
-    let string_conversions: Vec<TokenStream2> = method.params.iter().map(|p| {
+    let string_conversions: Vec<TokenStream2> = params.iter().map(|p| {
         let pname = &p.name;
         match &p.ty {
             JavaType::Object(name) if name == "String" => {
@@ -323,26 +351,26 @@ fn generate_method(
         }
     }).collect();
 
-    let jvalues: Vec<TokenStream2> = method.params.iter().map(|p| {
+    let jvalues: Vec<TokenStream2> = params.iter().map(|p| {
         p.ty.to_jvalue(&p.name)
     }).collect();
 
-    let return_type = method.return_type.to_rust_return_type();
+    let return_type_ts = return_type.to_rust_return_type();
 
-    let call = if method.is_static {
+    let call = if is_static {
         quote! { env.call_static_method(jni_str!(#class_path_lit), jni_str!(#method_name_lit), jni_sig!(#sig_lit), &[#(#jvalues),*])? }
     } else {
         quote! { env.call_method(obj, jni_str!(#method_name_lit), jni_sig!(#sig_lit), &[#(#jvalues),*])? }
     };
 
-    let body = match &method.return_type {
+    let body = match &return_type {
         JavaType::Void => quote! {
             #(#string_conversions)*
             #call;
             Ok(())
         },
         _ => {
-            let extract = method.return_type.extract_return(call);
+            let extract = return_type.extract_return(call);
             quote! {
                 #(#string_conversions)*
                 #extract
@@ -351,12 +379,12 @@ fn generate_method(
         }
     };
 
-    if method.is_static {
+    if is_static {
         quote! {
             pub fn #method_name<'caller, 'refs>(
                 env: &'refs mut jni::Env<'caller>,
                 #(#rust_params),*
-            ) -> Result<#return_type, jni::errors::Error> {
+            ) -> Result<#return_type_ts, jni::errors::Error> {
                 #body
             }
         }
@@ -366,9 +394,53 @@ fn generate_method(
                 env: &'refs mut jni::Env<'caller>,
                 obj: &'refs jni::objects::JObject<'caller>,
                 #(#rust_params),*
-            ) -> Result<#return_type, jni::errors::Error> {
+            ) -> Result<#return_type_ts, jni::errors::Error> {
                 #body
             }
+        }
+    }
+}
+
+fn generate_constructor(
+    class_path_lit: &LitStr,
+    name: &Ident,
+    params: &[JavaParam],
+) -> TokenStream2 {
+    let param_sig: String = params.iter().map(|p| p.ty.to_jni_sig()).collect();
+    let sig_lit = LitStr::new(&format!("({})V", param_sig), Span::call_site());
+
+    let rust_params: Vec<TokenStream2> = params.iter().map(|p| {
+        let pname = &p.name;
+        let pty = p.ty.to_rust_type();
+        quote! { #pname: #pty }
+    }).collect();
+
+    let string_conversions: Vec<TokenStream2> = params.iter().map(|p| {
+        let pname = &p.name;
+        match &p.ty {
+            JavaType::Object(n) if n == "String" => {
+                let tmp = Ident::new(&format!("__jstr_{}", pname), Span::call_site());
+                quote! { let #tmp = env.new_string(#pname)?; }
+            }
+            _ => quote! {},
+        }
+    }).collect();
+
+    let jvalues: Vec<TokenStream2> = params.iter().map(|p| {
+        p.ty.to_jvalue(&p.name)
+    }).collect();
+
+    quote! {
+        pub fn #name<'caller>(
+            env: &mut jni::Env<'caller>,
+            #(#rust_params),*
+        ) -> Result<jni::objects::JObject<'caller>, jni::errors::Error> {
+            #(#string_conversions)*
+            env.new_object(
+                jni_str!(#class_path_lit),
+                jni_sig!(#sig_lit),
+                &[#(#jvalues),*]
+            )
         }
     }
 }
@@ -382,67 +454,79 @@ pub fn java_class_decl(input: TokenStream) -> TokenStream {
     let class_path_lit = LitStr::new(&cp, Span::call_site());
 
     let native_registrations: Vec<TokenStream2> = class.methods.iter()
-        .filter(|m| m.is_native)
-        .map(|m| {
-            let name = &m.name;
-            let package_class = format!("{}.{}", class.package, class.name);
-            let package_class_lit = LitStr::new(&package_class, Span::call_site());
-            let return_type = m.return_type.to_jni_return_type();
-            let params: Vec<TokenStream2> = m.params.iter().map(|p| {
-                p.ty.to_jni_param_type()
-            }).collect();
+        .filter_map(|m| match m {
+            JavaMethod::Method { is_native: true, name, params, return_type, is_static, .. } => {
 
-            if m.is_static {
-                quote! {
-                    const _: jni::NativeMethod = jni::native_method! {
-                        java_type = #package_class_lit,
-                        static extern fn #name(#(#params),*) #return_type,
-                    };
-                }
-            } else {
-                quote! {
-                    const _: jni::NativeMethod = jni::native_method! {
-                        java_type = #package_class_lit,
-                        extern fn #name(#(#params),*) #return_type,
-                    };
-                }
+                let package_class = format!("{}.{}", class.package, class.name);
+                let package_class_lit = LitStr::new(&package_class, Span::call_site());
+                let return_type = return_type.to_jni_return_type();
+                let params: Vec<TokenStream2> = params.iter().map(|p| {
+                    p.ty.to_jni_param_type()
+                }).collect();
+
+                Some(if *is_static {
+                    quote! {
+                        const _: jni::NativeMethod = jni::native_method! {
+                            java_type = #package_class_lit,
+                            static extern fn #name(#(#params),*) #return_type,
+                        };
+                    }
+                } else {
+                    quote! {
+                        const _: jni::NativeMethod = jni::native_method! {
+                            java_type = #package_class_lit,
+                            extern fn #name(#(#params),*) #return_type,
+                        };
+                    }
+                })
             }
+            _ => None,
         })
         .collect();
 
     let validate_checks: Vec<TokenStream2> = class.methods.iter()
-        .filter(|m| !m.is_native)
-        .map(|m| {
-            let method_name_str = m.name.to_string();
-            let method_name_lit = LitStr::new(&method_name_str, Span::call_site());
-            let param_sig: String = m.params.iter().map(|p| p.ty.to_jni_sig()).collect();
-            let return_sig = m.return_type.to_jni_sig();
-            let sig_lit = LitStr::new(&format!("({}){}", param_sig, return_sig), Span::call_site());
-            let class_path_lit_str = LitStr::new(&format!("{}.{}", class.package, class.name), Span::call_site());
+        .filter_map(|m| match m {
+            JavaMethod::Method { is_native: false, name, params, return_type, is_static, .. } => {
 
-            if m.is_static {
-                quote! {
-                env.get_static_method_id(
-                    jni_str!(#class_path_lit_str),
-                    jni_str!(#method_name_lit),
-                    jni_sig!(#sig_lit),
-                )?;
+                let method_name_str = name.to_string();
+                let method_name_lit = LitStr::new(&method_name_str, Span::call_site());
+                let param_sig: String = params.iter().map(|p| p.ty.to_jni_sig()).collect();
+                let return_sig = return_type.to_jni_sig();
+                let sig_lit = LitStr::new(&format!("({}){}", param_sig, return_sig), Span::call_site());
+                let class_path_lit_str = LitStr::new(&format!("{}.{}", class.package, class.name), Span::call_site());
+
+                Some(if *is_static {
+                    quote! {
+                        env.get_static_method_id(
+                            jni_str!(#class_path_lit_str),
+                            jni_str!(#method_name_lit),
+                            jni_sig!(#sig_lit),
+                        )?;
+                    }
+                } else {
+                    quote! {
+                        env.get_method_id(
+                            jni_str!(#class_path_lit_str),
+                            jni_str!(#method_name_lit),
+                            jni_sig!(#sig_lit),
+                        )?;
+                    }
+                })
             }
-            } else {
-                quote! {
-                env.get_method_id(
-                    jni_str!(#class_path_lit_str),
-                    jni_str!(#method_name_lit),
-                    jni_sig!(#sig_lit),
-                )?;
-            }
-            }
+            _ => None,
         })
         .collect();
 
     let methods: Vec<TokenStream2> = class.methods.iter()
-        .filter(|m| !m.is_native)
-        .map(|m| generate_method(&class_path_lit, m))
+        .filter_map(|m| match m {
+            JavaMethod::Constructor { name, params } => {
+                Some(generate_constructor(&class_path_lit, name, params))
+            }
+            JavaMethod::Method { is_static, is_native: false, return_type, name, params, } => {
+                Some(generate_method(&class_path_lit, *is_static, return_type, name, params))
+            }
+            _ => None,
+        })
         .collect();
 
 
