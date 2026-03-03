@@ -59,7 +59,6 @@ impl JavaType {
             JavaType::Double => "D".to_string(),
             JavaType::Object(name) => {
                 let slashed = name.replace('.', "/");
-                // handle common unqualified names
                 let resolved = match slashed.as_str() {
                     "String" => "java/lang/String".to_string(),
                     "Object" => "java/lang/Object".to_string(),
@@ -154,8 +153,11 @@ impl JavaType {
             JavaType::Long => quote!(jlong),
             JavaType::Float => quote!(float),
             JavaType::Double => quote!(double),
-            JavaType::Object(x) => quote!(#x),
-            JavaType::Array(_) => quote!(todo!()),
+            JavaType::Object(x) => {
+                let x: TokenStream2 = syn::parse_str(x).unwrap();
+                quote!(#x)
+            },
+            JavaType::Array(_) => quote!(java.lang.Object),
         }
     }
     fn to_jni_return_type(&self) -> TokenStream2 {
@@ -169,8 +171,11 @@ impl JavaType {
             JavaType::Long => quote!(-> jlong),
             JavaType::Float => quote!(-> float),
             JavaType::Double => quote!(-> double),
-            JavaType::Object(x) => quote!(-> #x),
-            JavaType::Array(_) => quote!(-> todo!()),
+            JavaType::Object(x) => {
+                let x: TokenStream2 = syn::parse_str(x).unwrap();
+                quote!(-> #x)
+            },
+            JavaType::Array(_) => quote!(-> java.lang.Object),
         }
     }
 }
@@ -206,7 +211,7 @@ fn parse_java_type(input: ParseStream) -> Result<JavaType> {
     if input.peek(syn::token::Bracket) {
         let content;
         syn::bracketed!(content in input);
-        let _ = content; // empty []
+        let _ = content;
         return Ok(JavaType::Array(Box::new(ty)));
     }
 
@@ -215,7 +220,6 @@ fn parse_java_type(input: ParseStream) -> Result<JavaType> {
 
 impl Parse for JavaMethod {
     fn parse(input: ParseStream) -> Result<Self> {
-        // parse optional #[alias(name)] attribute
         let alias: Option<Ident> = if input.peek(Token![#]) {
             input.parse::<Token![#]>()?;
             let content;
@@ -234,7 +238,6 @@ impl Parse for JavaMethod {
         let mut is_static = false;
         let mut is_native = false;
 
-        // parse modifiers
         loop {
             if input.peek(Token![static]) {
                 input.parse::<Token![static]>()?;
@@ -253,7 +256,6 @@ impl Parse for JavaMethod {
             }
         }
 
-        // peek: if next is Ident followed immediately by '(' it's a constructor
         let is_constructor = input.peek(Ident) && {
             let fork = input.fork();
             let _: Ident = fork.parse()?;
