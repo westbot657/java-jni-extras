@@ -453,8 +453,8 @@ fn generate_constructor(
     }).collect();
 
     quote! {
-        pub fn #name<'caller>(
-            env: &mut jni::Env<'caller>,
+        pub fn #name<'caller, 'refs>(
+            env: &'refs mut jni::Env<'caller>,
             #(#rust_params),*
         ) -> Result<jni::objects::JObject<'caller>, jni::errors::Error> {
             #(#string_conversions)*
