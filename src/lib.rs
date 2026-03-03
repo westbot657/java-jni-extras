@@ -105,7 +105,7 @@ impl JavaType {
 
     fn to_jvalue(&self, ident: &Ident) -> TokenStream2 {
         match self {
-            JavaType::Boolean => quote! { jni::objects::JValue::Bool(#ident as u8) },
+            JavaType::Boolean => quote! { jni::objects::JValue::Bool(#ident) },
             JavaType::Byte => quote! { jni::objects::JValue::Byte(#ident) },
             JavaType::Char => quote! { jni::objects::JValue::Char(#ident) },
             JavaType::Short => quote! { jni::objects::JValue::Short(#ident) },
