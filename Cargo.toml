@@ -1,6 +1,6 @@
 [package]
 name = "java-jni-extras"
-version = "0.0.4"
+version = "0.0.5"
 authors = ["westbot <82739021+westbot657@users.noreply.github.com>"]
 description = "A collection of helper macros for use with jni"
 edition = "2024"

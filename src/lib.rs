@@ -13,6 +13,7 @@ struct JavaClass {
 enum JavaMethod {
     Constructor {
         name: Ident,
+        alias: Option<Ident>,
         params: Vec<JavaParam>,
     },
     Method {
@@ -214,6 +215,22 @@ fn parse_java_type(input: ParseStream) -> Result<JavaType> {
 
 impl Parse for JavaMethod {
     fn parse(input: ParseStream) -> Result<Self> {
+        // parse optional #[alias(name)] attribute
+        let alias: Option<Ident> = if input.peek(Token![#]) {
+            input.parse::<Token![#]>()?;
+            let content;
+            syn::bracketed!(content in input);
+            let attr_name: Ident = content.parse()?;
+            if attr_name != "alias" {
+                return Err(syn::Error::new(attr_name.span(), "expected 'alias'"));
+            }
+            let inner;
+            syn::parenthesized!(inner in content);
+            Some(inner.parse::<Ident>()?)
+        } else {
+            None
+        };
+
         let mut is_static = false;
         let mut is_native = false;
 
@@ -249,7 +266,7 @@ impl Parse for JavaMethod {
             syn::parenthesized!(content in input);
             let params = parse_params(&content)?;
             input.parse::<Token![;]>()?;
-            return Ok(JavaMethod::Constructor { name, params });
+            return Ok(JavaMethod::Constructor { name, alias, params });
         }
 
         let return_type = parse_java_type(input)?;
@@ -405,9 +422,12 @@ fn generate_constructor(
     class_path_lit: &LitStr,
     name: &Ident,
     params: &[JavaParam],
+    alias: Option<&Ident>
 ) -> TokenStream2 {
     let param_sig: String = params.iter().map(|p| p.ty.to_jni_sig()).collect();
     let sig_lit = LitStr::new(&format!("({})V", param_sig), Span::call_site());
+
+    let name = alias.unwrap_or(name);
 
     let rust_params: Vec<TokenStream2> = params.iter().map(|p| {
         let pname = &p.name;
@@ -519,8 +539,8 @@ pub fn java_class_decl(input: TokenStream) -> TokenStream {
 
     let methods: Vec<TokenStream2> = class.methods.iter()
         .filter_map(|m| match m {
-            JavaMethod::Constructor { name, params } => {
-                Some(generate_constructor(&class_path_lit, name, params))
+            JavaMethod::Constructor { name, params, alias } => {
+                Some(generate_constructor(&class_path_lit, name, params, alias.as_ref()))
             }
             JavaMethod::Method { is_static, is_native: false, return_type, name, params, } => {
                 Some(generate_method(&class_path_lit, *is_static, return_type, name, params))
