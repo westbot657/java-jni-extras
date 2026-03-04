@@ -157,7 +157,10 @@ impl JavaType {
                 let x: TokenStream2 = syn::parse_str(x).unwrap();
                 quote!(#x)
             },
-            JavaType::Array(_) => quote!(java.lang.Object),
+            JavaType::Array(x) => {
+                let x = x.to_jni_param_type();
+                quote!(#x[])
+            },
         }
     }
     fn to_jni_return_type(&self) -> TokenStream2 {
@@ -175,7 +178,10 @@ impl JavaType {
                 let x: TokenStream2 = syn::parse_str(x).unwrap();
                 quote!(-> #x)
             },
-            JavaType::Array(_) => quote!(-> java.lang.Object),
+            JavaType::Array(x) => {
+                let x = x.to_jni_param_type();
+                quote!(-> #x[])
+            },
         }
     }
 }
