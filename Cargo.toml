@@ -9,5 +9,5 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
-java-jni-extras-proc = { path = "java-jni-extras-proc" }
+java-jni-extras-proc = "0.1.0"
 jni = "0.22.4"
