@@ -28,12 +28,21 @@ macro_rules! java_primitive {
                 *self
             }
         }
-        impl<'c, 'r> JavaTyped<'c> for &'r [$T]
+        impl<'c, 'r> JavaTyped<'c> for &[$T]
         {
             type JType = JPrimitiveArray<'c, <$T as JavaPrimitive>::P>;
             fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
                 let arr = JPrimitiveArray::<<$T as JavaPrimitive>::P>::new(env, self.len())?;
                 arr.set_region(env, 0, unsafe { std::mem::transmute(self) })?;
+                Ok(arr)
+            }
+        }
+        impl<'c, 'r, const N: usize> JavaTyped<'c> for &[$T; N]
+        {
+            type JType = JPrimitiveArray<'c, <$T as JavaPrimitive>::P>;
+            fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+                let arr = JPrimitiveArray::<<$T as JavaPrimitive>::P>::new(env, self.len())?;
+                arr.set_region(env, 0, unsafe { std::mem::transmute(self.as_slice()) })?;
                 Ok(arr)
             }
         }
@@ -65,7 +74,7 @@ impl<'c, T: Sized + JavaPrimitive> JavaTyped<'c> for T {
     }
 }
 
-impl<'c, 'r> JavaTyped<'c> for &'r str {
+impl<'c, 'r> JavaTyped<'c> for &str {
     type JType = JString<'c>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         env.new_string(self)
@@ -79,7 +88,25 @@ impl<'c, 'r> JavaTyped<'c> for String {
     }
 }
 
-impl<'c, 'r, T> JavaTyped<'c> for &'r [T]
+impl<'c, 'r, T> JavaTyped<'c> for &[T]
+where
+    T: JavaObject + JavaTyped<'c> + Reference<Kind<'c> = T> + AsRef<JObject<'c>>,
+    T::JType: 'c + Reference<Kind<'c> = T::JType> + AsRef<T::JType>,
+{
+    type JType = JObjectArray<'c, T::JType>;
+    fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+        let null = T::JType::null();
+        let arr: Self::JType = JObjectArray::<'c, T::JType>::new(env, self.len(), null)?;
+        for (i, v) in self.iter().enumerate() {
+            let v = env.new_local_ref(v)?;
+            let v = JavaTyped::<'c>::into_java(v, env)?;
+            arr.set_element(env, i, v)?;
+        }
+        Ok(arr)
+    }
+}
+
+impl<'c, 'r, T, const N: usize> JavaTyped<'c> for &[T; N]
 where
     T: JavaObject + JavaTyped<'c> + Reference<Kind<'c> = T> + AsRef<JObject<'c>>,
     T::JType: 'c + Reference<Kind<'c> = T::JType> + AsRef<T::JType>,
@@ -108,6 +135,84 @@ where
         let arr: Self::JType = JObjectArray::<'c, T::JType>::new(env, self.len(), null)?;
         for (i, v) in self.into_iter().enumerate() {
             let v = JavaTyped::<'c>::into_java(v, env)?;
+            arr.set_element(env, i, v)?;
+        }
+        Ok(arr)
+    }
+}
+
+impl<'c, 'r> JavaTyped<'c> for &[&str] {
+    type JType = JObjectArray<'c, JString<'c>>;
+    fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+        let null = JString::null();
+        let arr: Self::JType = JObjectArray::<'c, JString>::new(env, self.len(), null)?;
+        for (i, v) in self.iter().enumerate() {
+            let v = v.into_java(env)?;
+            arr.set_element(env, i, v)?;
+        }
+        Ok(arr)
+    }
+}
+
+impl<'c, 'r, const N: usize> JavaTyped<'c> for &[&str; N] {
+    type JType = JObjectArray<'c, JString<'c>>;
+    fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+        let null = JString::null();
+        let arr: Self::JType = JObjectArray::<'c, JString>::new(env, self.len(), null)?;
+        for (i, v) in self.iter().enumerate() {
+            let v = v.into_java(env)?;
+            arr.set_element(env, i, v)?;
+        }
+        Ok(arr)
+    }
+}
+
+impl<'c, 'r> JavaTyped<'c> for Vec<&str> {
+    type JType = JObjectArray<'c, JString<'c>>;
+    fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+        let null = JString::null();
+        let arr: Self::JType = JObjectArray::<'c, JString>::new(env, self.len(), null)?;
+        for (i, v) in self.into_iter().enumerate() {
+            let v = v.into_java(env)?;
+            arr.set_element(env, i, v)?;
+        }
+        Ok(arr)
+    }
+}
+
+impl<'c, 'r> JavaTyped<'c> for &[String] {
+    type JType = JObjectArray<'c, JString<'c>>;
+    fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+        let null = JString::null();
+        let arr: Self::JType = JObjectArray::<'c, JString>::new(env, self.len(), null)?;
+        for (i, v) in self.iter().enumerate() {
+            let v = v.clone().into_java(env)?;
+            arr.set_element(env, i, v)?;
+        }
+        Ok(arr)
+    }
+}
+
+impl<'c, 'r, const N: usize> JavaTyped<'c> for &[String; N] {
+    type JType = JObjectArray<'c, JString<'c>>;
+    fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+        let null = JString::null();
+        let arr: Self::JType = JObjectArray::<'c, JString>::new(env, self.len(), null)?;
+        for (i, v) in self.iter().enumerate() {
+            let v = v.clone().into_java(env)?;
+            arr.set_element(env, i, v)?;
+        }
+        Ok(arr)
+    }
+}
+
+impl<'c, 'r> JavaTyped<'c> for Vec<String> {
+    type JType = JObjectArray<'c, JString<'c>>;
+    fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
+        let null = JString::null();
+        let arr: Self::JType = JObjectArray::<'c, JString>::new(env, self.len(), null)?;
+        for (i, v) in self.into_iter().enumerate() {
+            let v = v.into_java(env)?;
             arr.set_element(env, i, v)?;
         }
         Ok(arr)

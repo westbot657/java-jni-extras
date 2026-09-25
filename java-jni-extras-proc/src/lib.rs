@@ -1,10 +1,9 @@
-use proc_macro::TokenStream;
+use proc_macro::{TokenStream};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::ops::Deref;
-use quote::{quote, ToTokens, TokenStreamExt, format_ident};
-use syn::{parse_macro_input, Block, Ident, Token, ItemUse, Error, braced, parenthesized, bracketed, parse_str, Type, parse_quote, Path};
+use quote::{quote, ToTokens, TokenStreamExt};
+use syn::{parse_macro_input, Ident, Token, braced, parenthesized, bracketed, parse_str, Type, parse_quote};
 use syn::parse::{Parse, ParseStream};
 
 #[proc_macro]
@@ -40,7 +39,7 @@ struct JavaClassBody {
 struct NativeFunction {
     is_static: bool,
     signature: JavaSignature,
-    body: Block
+    body: proc_macro2::TokenStream,
 }
 
 struct ExternFunction {
@@ -292,7 +291,9 @@ impl Parse for NativeFunction {
 
         let signature: JavaSignature = input.parse()?;
 
-        let body: Block = input.parse()?;
+        let body;
+        braced!(body in input);
+        let body: proc_macro2::TokenStream = body.parse()?;
 
         Ok(Self {
             is_static,
@@ -459,8 +460,12 @@ impl JavaType {
                 imports.resolve_rust_type(o)
             }
             JavaType::Array(a) => {
-                let at = a.to_rust_type(imports);
-                parse_quote!(jni::objects::#at)
+                let at = a.to_rust_concrete_type(imports);
+                if a.is_primitive() {
+                    parse_quote!(jni::objects::JPrimitiveArray<'c, #at>)
+                } else {
+                    parse_quote!(jni::objects::JObjectArray<'c, #at>)
+                }
             }
         }
     }
@@ -505,11 +510,11 @@ impl JavaType {
                 imports.resolve_rust_type(o)
             }
             JavaType::Array(a) => {
-                let at = a.to_rust_type(imports);
+                let at = a.to_rust_concrete_type(imports);
                 if a.is_primitive() {
-                    parse_quote!(JPrimitiveArray<'c, #at>)
+                    parse_quote!(jni::objects::JPrimitiveArray<'c, #at>)
                 } else {
-                    parse_quote!(JObjectArray<'c, #at>)
+                    parse_quote!(jni::objects::JObjectArray<'c, #at>)
                 }
             }
         }
@@ -548,6 +553,58 @@ impl ToTokens for JavaMod {
             let mut nats = proc_macro2::TokenStream::default();
             for nat in self.class.body.natives.iter() {
                 let name = &nat.signature.name;
+                let body = &nat.body;
+                let body = quote!({#body});
+                let args = nat.signature.args
+                    .iter()
+                    .map(|a| {
+                        let JavaArg { name, typ } = a;
+                        let typ = typ.to_rust_concrete_type(&self.import_paths);
+                        quote! {
+                            #name: #typ
+                        }
+                    });
+
+                let ret_typ = nat.signature.returns.to_rust_concrete_type(&self.import_paths);
+
+                let body = if nat.signature.returns == JavaType::Void {
+                    quote! {
+                        { #body; Ok(()) }
+                    }
+                } else if nat.signature.returns.is_primitive() {
+                    quote! {
+                        {
+                            let x = #body;
+                            Ok(x)
+                        }
+                    }
+                } else {
+                    quote! {
+                        {
+                            let v = #body;
+                            v.into_java(env)
+                        }
+                    }
+                };
+
+                let func = if nat.is_static {
+                    quote! {
+                        fn #name<'c>(
+                            env: &mut jni::Env<'c>,
+                            class: jni::objects::JClass<'c>,
+                            #(#args),*
+                        ) -> jni::errors::Result<#ret_typ> #body
+                    }
+                } else {
+                    quote! {
+                        fn #name<'c>(
+                            env: &mut jni::Env<'c>,
+                            this: jni::objects::JObject<'c>,
+                            #(#args),*
+                        ) -> jni::errors::Result<#ret_typ> #body
+                    }
+                };
+
                 let stat = if nat.is_static {
                     quote!(static)
                 } else {
@@ -572,9 +629,14 @@ impl ToTokens for JavaMod {
                     const _: jni::NativeMethod = jni::native_method!{
                         java_type = #package_class, #stat extern fn #name(#(#arg_types),*)#ret,
                     };
+                    #func
                 });
             }
-            nats
+            quote! {
+                const _: () = const {
+                    #nats
+                };
+            }
         };
 
         let (validation_checks, methods) = if self.class.body.externs.is_empty() {
@@ -656,10 +718,10 @@ impl ToTokens for JavaMod {
                                 }
                             }
                         },
-                        JavaType::Array(a) => {
-
+                        array @ JavaType::Array(_) => {
+                            let t = array.to_rust_concrete_type(&self.import_paths);
                             quote! {
-                                ret.l()
+                                env.cast_local::<#t>(ret.l()?)
                             }
                         },
                     };
