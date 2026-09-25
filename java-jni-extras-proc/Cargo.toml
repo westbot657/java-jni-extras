@@ -1,13 +1,16 @@
 [package]
-name = "java-jni-extras"
+name = "java-jni-extras-proc"
 version = "0.1.0"
 repository = "https://github.com/westbot657/java-jni-extras"
 authors = ["westbot <82739021+westbot657@users.noreply.github.com>"]
 description = "A collection of helper macros for use with jni"
 edition = "2024"
 license = "MIT"
-readme = "README.md"
+
+[lib]
+proc-macro = true
 
 [dependencies]
-java-jni-extras-proc = { path = "java-jni-extras-proc" }
-jni = "0.22.4"
+quote = "1.0.44"
+proc-macro2 = "1.0.106"
+syn = { version = "3.0.6", features = ["full"] }
