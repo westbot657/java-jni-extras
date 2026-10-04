@@ -443,6 +443,14 @@ impl JavaType {
     fn is_primitive(&self) -> bool {
         !matches!(self, Self::String | Self::Object(_) | Self::Array(_))
     }
+    fn is_custom_object(&self) -> bool {
+        if let Self::Object(o) = self {
+            let n = o.to_string();
+            n != "java.lang.Object"
+        } else {
+            false
+        }
+    }
 
     fn to_rust_return_type(&self, imports: &JavaImports) -> Type {
         match self {
@@ -519,6 +527,31 @@ impl JavaType {
             }
         }
     }
+    fn to_rust_simplified_type(&self) -> Type {
+        match self {
+            JavaType::Void => parse_quote!(()),
+            JavaType::Boolean => parse_quote!(jni::sys::jboolean),
+            JavaType::Byte => parse_quote!(jni::sys::jbyte),
+            JavaType::Char => parse_quote!(jni::sys::jchar),
+            JavaType::Short => parse_quote!(jni::sys::jshort),
+            JavaType::Int => parse_quote!(jni::sys::jint),
+            JavaType::Long => parse_quote!(jni::sys::jlong),
+            JavaType::Float => parse_quote!(jni::sys::jfloat),
+            JavaType::Double => parse_quote!(jni::sys::jdouble),
+            JavaType::String => parse_quote!(jni::objects::JString<'c>),
+            JavaType::Object(_) => {
+                parse_quote!(jni::objects::JObject<'c>)
+            }
+            JavaType::Array(a) => {
+                let at = a.to_rust_simplified_type();
+                if a.is_primitive() {
+                    parse_quote!(jni::objects::JPrimitiveArray<'c, #at>)
+                } else {
+                    parse_quote!(jni::objects::JObjectArray<'c, #at>)
+                }
+            }
+        }
+    }
 }
 impl JavaArg {
     fn convert_rust_to_java(&self, _imports: &JavaImports) -> proc_macro2::TokenStream {
@@ -565,7 +598,7 @@ impl ToTokens for JavaMod {
                         }
                     });
 
-                let ret_typ = nat.signature.returns.to_rust_concrete_type(&self.import_paths);
+                let ret_typ = nat.signature.returns.to_rust_simplified_type();
 
                 let body = if nat.signature.returns == JavaType::Void {
                     quote! {
@@ -576,6 +609,13 @@ impl ToTokens for JavaMod {
                         {
                             let x = #body;
                             Ok(x)
+                        }
+                    }
+                } else if nat.signature.returns.is_custom_object() {
+                    quote! {
+                        {
+                            let v = #body;
+                            Ok(v.into_java(env)?.into())
                         }
                     }
                 } else {
@@ -785,8 +825,13 @@ impl ToTokens for JavaMod {
                 fn as_ref(&self) -> &jni::objects::JObject<'l> { &self.0 }
             }
             impl<'l> From<#name<'l>> for jni::objects::JObject<'l> {
-                fn from(value: #name<'l>) -> jni::objects::JObject<'l> {
+                fn from(value: #name<'l>) -> Self {
                     value.0
+                }
+            }
+            impl<'l> From<jni::objects::JObject<'l>> for #name<'l> {
+                fn from(value: jni::objects::JObject<'l>) -> Self {
+                    Self(value)
                 }
             }
             impl<'local> #name<'local> {
