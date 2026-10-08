@@ -1,10 +1,16 @@
 use proc_macro::{TokenStream};
+use proc_macro2::TokenTree;
+use syn::parse::discouraged::Speculative;
+use syn::punctuated::Punctuated;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{parse_macro_input, Ident, Token, braced, parenthesized, bracketed, parse_str, Type, parse_quote};
+use syn::{Ident, Token, Type, braced, bracketed, parenthesized, parse_macro_input, parse_quote, parse_str};
 use syn::parse::{Parse, ParseStream};
+
+mod lib2;
+pub(crate) mod parse;
 
 #[proc_macro]
 pub fn java_class(input: TokenStream) -> TokenStream {
@@ -32,8 +38,14 @@ struct JavaClass {
 }
 
 struct JavaClassBody {
+    fields: Vec<JavaField>,
     natives: Vec<NativeFunction>,
     externs: Vec<ExternFunction>,
+}
+
+struct JavaField {
+    name: Ident,
+    signature: JavaType,
 }
 
 struct NativeFunction {
@@ -72,6 +84,77 @@ enum JavaType {
     String,
     Object(DottedName),
     Array(Box<Self>),
+}
+
+struct FieldData {
+    is_static: bool,
+    name: Ident,
+    ty: Option<JavaType>,
+}
+
+struct ClassInfo {
+    field_data: Vec<FieldData>,
+}
+
+struct JavaCodeBlock {
+    statements: Punctuated<JavaCodeStatement, Token![;]>,
+}
+
+enum JavaCodeStatement {
+    Misc(proc_macro2::TokenStream),
+    FieldRead { // [let x[: T] = ]obj.field // #\[T\] obj.field
+        binding: Option<Ident>,
+        signature: Option<JavaType>,
+        java_obj: Ident,
+        java_field: Ident,
+    },
+    FieldSet { // obj.field[: T] = ...
+        java_obj: Ident,
+        java_field: Ident,
+        signature: Option<JavaType>,
+        value: proc_macro2::TokenStream,
+    },
+    ArrayRead { // [let x[: T] = ]array\[...\]
+        binding: Option<Ident>,
+        signature: Option<JavaType>,
+        array: Ident,
+        index: proc_macro2::TokenStream,
+    },
+    ArraySet { // array[...] = ...
+        array: Ident,
+        index: proc_macro2::TokenStream,
+        value: proc_macro2::TokenStream,
+    },
+    StaticCall { // [let x[: T] = ]Class::func(..., ...)
+        binding: Option<Ident>,
+        signature: Option<JavaType>,
+        class: Ident,
+        func: Ident,
+        args: Vec<proc_macro2::TokenStream>,
+    },
+    MethodCall { // [let x[: T] = ]obj.func(..., ...)
+        binding: Option<Ident>,
+        signature: Option<JavaType>,
+        java_obj: Ident,
+        func: Ident,
+        args: Vec<proc_macro2::TokenStream>,
+    },
+    New { // [let x = ]new Class(..., ...)
+        binding: Option<Ident>,
+        class: Ident,
+        args: Vec<proc_macro2::TokenStream>,
+    },
+    Alloc { // [let x = ]alloc Class()
+        binding: Option<Ident>,
+        class: Ident,
+    },
+    ThrowNew {
+        error: DottedName,
+        msg: proc_macro2::TokenStream,
+    },
+    ThrowObj {
+        obj: Ident,
+    }
 }
 
 // parse helper structs
@@ -144,6 +227,10 @@ mod kw {
     syn::custom_keyword!(long);
     syn::custom_keyword!(float);
     syn::custom_keyword!(double);
+    syn::custom_keyword!(java);
+    syn::custom_keyword!(new);
+    syn::custom_keyword!(alloc);
+    syn::custom_keyword!(throw);
 }
 
 // state
@@ -259,27 +346,115 @@ impl Parse for JavaClass {
 
 impl Parse for JavaClassBody {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut fields = Vec::new();
         let mut natives = Vec::new();
         let mut externs = Vec::new();
         while !input.is_empty() {
             if input.peek(kw::native) || input.peek2(kw::native) {
-                let native: NativeFunction = input.parse()?;
+                let native = NativeFunction::parse(input)?;
                 natives.push(native);
-            } else {
+            } else if input.peek(Token![fn]) || input.peek2(Token![fn]) {
                 let ext: ExternFunction = input.parse()?;
                 externs.push(ext);
+            } else {
+                let name: Ident = input.parse()?;
+                let _ = input.parse::<Token![:]>()?;
+                let ty: JavaType = input.parse()?;
+                let _ = input.parse::<Token![;]>()?;
+                fields.push(JavaField { name, signature: ty });
             }
         }
 
         Ok(Self {
+            fields,
             natives,
             externs,
         })
     }
 }
 
-impl Parse for NativeFunction {
+impl Parse for JavaCodeBlock {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let statements = Punctuated::parse_terminated(input)?;
+        Ok(Self { statements })
+    }
+}
+
+impl Parse for JavaCodeStatement {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+
+        macro_rules! try_parse {
+            ($f:tt) => {
+                let fork = input.fork();
+                if let Some(res) = Self::$f(&fork) {
+                    input.advance_to(&fork);
+                    match res {
+                        Ok(v) => return Ok(v),
+                        Err(e) => return Ok(Self::Misc(e.to_compile_error()))
+                    }
+                }
+            };
+        }
+
+        try_parse!(parse_throw);
+
+        input.step(|cursor| {
+            let mut rest = *cursor;
+            let mut stream = proc_macro2::TokenStream::new();
+            while let Some((tt, next)) = rest.token_tree() {
+                stream.append(tt.clone());
+                match &tt {
+                    TokenTree::Punct(punct) if punct.as_char() == ';' => {
+                        return Ok((Self::Misc(stream), next));
+                    }
+                    _ => rest = next,
+                }
+            }
+            Ok((Self::Misc(stream), rest))
+        })
+
+    }
+}
+impl JavaCodeStatement {
+    fn parse_throw(input: ParseStream) -> Option<syn::Result<Self>> {
+        if input.peek(kw::throw) {
+            Some({
+                let _ = input.parse::<kw::throw>().unwrap();
+                if input.peek(kw::new) {
+                    let _ = input.parse::<kw::new>().unwrap();
+                    let class = match input.parse::<DottedName>() {
+                        Ok(name) => name,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let args = match (|| {
+                        let args;
+                        parenthesized!(args in input);
+                        Ok(args)
+                    })() {
+                        Ok(args) => args,
+                        Err(e) => return Some(Err(e))
+                    };
+                    Ok(Self::ThrowNew {
+                        error: class,
+                        msg: args
+                            .parse::<proc_macro2::TokenStream>()
+                            .unwrap()
+                    })
+                } else {
+                    match input.parse::<Ident>() {
+                        Ok(i) => Ok(Self::ThrowObj { obj: i }),
+                        Err(e) => Err(e)
+                    }
+                }
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl NativeFunction {
+    fn parse(input: ParseStream, class_info: &ClassInfo) -> syn::Result<Self> {
         let is_static = if input.peek(Token![static]) {
             let _ = input.parse::<Token![static]>()?;
             let _ = input.parse::<kw::native>()?;
@@ -293,7 +468,27 @@ impl Parse for NativeFunction {
 
         let body;
         braced!(body in input);
-        let body: proc_macro2::TokenStream = body.parse()?;
+
+        let body = body.step(|cursor| {
+            let mut body_out = proc_macro2::TokenStream::new();
+            let mut rest = *cursor;
+            while let Some((tt, next)) = rest.token_tree() {
+                body_out.append(tt.clone());
+                match tt {
+                    TokenTree::Ident(i) if i == "java" => {
+                        if let Some((content, span, next)) = next.group(proc_macro2::Delimiter::Brace) {
+                            let content = content.token_stream();
+                            let block: JavaCodeBlock = parse_quote!(#content);
+                            // UGHHHHHH
+                            body_out.append_all(block.to_tokens(class_info));
+                            rest = next;
+                        }
+                    },
+                    _ => rest = next,
+                }
+            }
+            Ok((body_out, rest))
+        })?;
 
         Ok(Self {
             is_static,
