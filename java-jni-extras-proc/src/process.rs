@@ -7,6 +7,7 @@ use syn::{Ident, parse_quote};
 use crate::{ClassBody, DottedName, JavaBinding, JavaClass, JavaClassDef, JavaCodeBlock, JavaExpr, JavaExpression, JavaField, JavaFnSignature, JavaImport, JavaSignatureTag, JavaType, JavaUse, JavaValueExpr, NativeFunction};
 
 pub struct JniClass {
+    pub uses: Vec<JavaUse>,
     pub struct_name: Ident,
 
     pub class_name: String,
@@ -86,6 +87,7 @@ impl JavaClassDef {
         }
 
         JniClass {
+            uses,
             struct_name: name,
             class_name,
             classpath,
@@ -138,7 +140,7 @@ impl JavaExpression {
         match self {
             JavaExpression::Expr(expr) => expr.resolve(imports, uses, fields),
             JavaExpression::StaticFieldWrite(w) => {
-                let mut errs = Vec::with_capacity(2);
+                let mut errs = Vec::with_capacity(3);
                 if let Err(e) = w.class.resolve(imports, uses) {
                     errs.push(e);
                 }
@@ -155,7 +157,7 @@ impl JavaExpression {
                 }
             },
             JavaExpression::FieldWrite(w) => {
-                let mut errs = Vec::new();
+                let mut errs = Vec::with_capacity(2);
                 if let Err(e) = resolve_field_signature(&w.obj, &w.field, &mut w.signature, fields) {
                     errs.push(e);
                 }
@@ -169,7 +171,7 @@ impl JavaExpression {
                 }
             },
             JavaExpression::ArrayWrite(w) => {
-                let mut errs = Vec::with_capacity(2);
+                let mut errs = Vec::with_capacity(3);
                 if let Err(e) = w.index.resolve(imports, uses, fields) {
                     errs.push(e);
                 }
@@ -197,13 +199,106 @@ impl JavaExpression {
 
 impl JavaValueExpr {
     fn resolve(&mut self, imports: &[JavaImport], uses: &[JavaUse], fields: &[JavaField]) -> Result<(), String> {
-        todo!()
+        match self {
+            Self::Expr(e) => e.resolve(imports, uses, fields),
+            Self::Block(b) => b.resolve(imports, uses, fields),
+        }
     }
 }
 
 impl JavaExpr {
     fn resolve(&mut self, imports: &[JavaImport], uses: &[JavaUse], fields: &[JavaField]) -> Result<(), String> {
-        todo!()
+        match self {
+            Self::Error(_) => Ok(()),
+            Self::StaticCall(s) => {
+                let mut errs = Vec::with_capacity(2 + s.args.len());
+                if let Err(e) = s.class.resolve(imports, uses) {
+                    errs.push(e);
+                }
+                for arg in s.args.iter_mut() {
+                    if let Err(e) = arg.resolve(imports, uses, fields) {
+                        errs.push(e);
+                    }
+                }
+                if let Err(e) = resolve_static_function_signature(&s.class, &s.func, &mut s.signature) {
+                    errs.push(e);
+                }
+                if errs.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errs.join("; "))
+                }
+            },
+            Self::MethodCall(m) => {
+                let mut errs = Vec::with_capacity(1 + m.args.len());
+                for arg in m.args.iter_mut() {
+                    if let Err(e) = arg.resolve(imports, uses, fields) {
+                        errs.push(e);
+                    }
+                }
+                if let Err(e) = resolve_method_signature(&m.obj, &m.func, &mut m.signature) {
+                    errs.push(e);
+                }
+                if errs.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errs.join("; "))
+                }
+            },
+            Self::StaticFieldRead(s) => {
+                let mut errs = Vec::with_capacity(2);
+                if let Err(e) = s.class.resolve(imports, uses) {
+                    errs.push(e);
+                }
+                if let Err(e) = resolve_static_field_signature(&s.class, &s.field, &mut s.signature, fields) {
+                    errs.push(e);
+                }
+                if errs.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errs.join("; "))
+                }
+            },
+            Self::FieldRead(f) => {
+                resolve_field_signature(&f.obj, &f.field, &mut f.signature, fields)
+            },
+            Self::ArrayRead(a) => {
+                let mut errs = Vec::with_capacity(2);
+                if let Err(e) = a.index.resolve(imports, uses, fields) {
+                    errs.push(e);
+                }
+                if let Err(e) = resolve_array_signature(&a.array, &mut a.signature) {
+                    errs.push(e);
+                }
+                if errs.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errs.join("; "))
+                }
+            },
+            Self::New(n) => {
+                let mut errs = Vec::with_capacity(2 + n.args.len());
+                if let Err(e) = n.class.resolve(imports, uses) {
+                    errs.push(e);
+                }
+                for arg in n.args.iter_mut() {
+                    if let Err(e) = arg.resolve(imports, uses, fields) {
+                        errs.push(e);
+                    }
+                }
+                if let Err(e) = resolve_ctor_signature(&n.class, &mut n.signature) {
+                    errs.push(e);
+                }
+                if errs.is_empty() {
+                    Ok(())
+                } else {
+                    Err(errs.join("; "))
+                }
+            },
+            Self::Alloc(a) => {
+                a.class.resolve(imports, uses)
+            },
+        }
     }
 }
 
@@ -318,6 +413,13 @@ fn resolve_static_function_signature(class: &DottedName, func: &Ident, signature
     match signature {
         Some(_) => Ok(()),
         None => Err(format!("signature tag is needed for function call: `{}::{}(...)`", class, func)),
+    }
+}
+
+fn resolve_ctor_signature(class: &DottedName, signature: &mut Option<JavaSignatureTag>) -> Result<(), String> {
+    match signature {
+        Some(_) => Ok(()),
+        None => Err(format!("signature tag is needed for class ctor: `new {}(...)`", class)),
     }
 }
 
