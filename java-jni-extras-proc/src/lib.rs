@@ -1,77 +1,39 @@
-use proc_macro::{TokenStream};
-use proc_macro2::TokenTree;
-use syn::parse::discouraged::Speculative;
+use std::fmt::Display;
+
+use proc_macro2::{Delimiter, TokenStream};
+use quote::quote;
 use syn::punctuated::Punctuated;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{Ident, Token, Type, braced, bracketed, parenthesized, parse_macro_input, parse_quote, parse_str};
-use syn::parse::{Parse, ParseStream};
+use syn::{Ident, LitStr, Token, parse_macro_input};
 
-mod lib2;
 pub(crate) mod parse;
+pub(crate) mod process;
+pub(crate) mod output;
 
-#[proc_macro]
-pub fn java_class(input: TokenStream) -> TokenStream {
-    let mut java_mod = parse_macro_input!(input as JavaMod);
-    java_mod.resolve();
-    quote!{ #java_mod }.into()
+mod lib3;
+
+pub(crate) mod kw {
+    use syn::custom_keyword;
+
+    custom_keyword!(void);
+    custom_keyword!(boolean);
+    custom_keyword!(byte);
+    custom_keyword!(char);
+    custom_keyword!(short);
+    custom_keyword!(int);
+    custom_keyword!(long);
+    custom_keyword!(float);
+    custom_keyword!(double);
+    custom_keyword!(native);
+    custom_keyword!(throw);
+    custom_keyword!(new);
+    custom_keyword!(import);
+    custom_keyword!(package);
+    custom_keyword!(class);
+
+    custom_keyword!(alloc);
 }
 
-// output structs
-struct JavaMod {
-    package: DottedName,
-    import_paths: JavaImports,
-    class: JavaClass,
-}
-
-#[derive(Default)]
-struct JavaImports {
-    java_types: HashMap<String, DottedName>,
-    rust_types: HashMap<String, ScopedName>,
-}
-
-struct JavaClass {
-    name: Ident,
-    body: JavaClassBody,
-}
-
-struct JavaClassBody {
-    fields: Vec<JavaField>,
-    natives: Vec<NativeFunction>,
-    externs: Vec<ExternFunction>,
-}
-
-struct JavaField {
-    name: Ident,
-    signature: JavaType,
-}
-
-struct NativeFunction {
-    is_static: bool,
-    signature: JavaSignature,
-    body: proc_macro2::TokenStream,
-}
-
-struct ExternFunction {
-    is_static: bool,
-    signature: JavaSignature,
-}
-
-struct JavaSignature {
-    name: Ident,
-    args: Vec<JavaArg>,
-    returns: JavaType,
-}
-
-struct JavaArg {
-    name: Ident,
-    typ: JavaType,
-}
-
-#[derive(PartialEq)]
-enum JavaType {
+pub(crate) enum JavaType {
     Void,
     Boolean,
     Byte,
@@ -86,1033 +48,298 @@ enum JavaType {
     Array(Box<Self>),
 }
 
-struct FieldData {
-    is_static: bool,
-    name: Ident,
-    ty: Option<JavaType>,
-}
+#[derive(Clone)]
+pub(crate) struct DottedName(Punctuated<Ident, Token![.]>);
 
-struct ClassInfo {
-    field_data: Vec<FieldData>,
-}
-
-struct JavaCodeBlock {
-    statements: Punctuated<JavaCodeStatement, Token![;]>,
-}
-
-enum JavaCodeStatement {
-    Misc(proc_macro2::TokenStream),
-    FieldRead { // [let x[: T] = ]obj.field // #\[T\] obj.field
-        binding: Option<Ident>,
-        signature: Option<JavaType>,
-        java_obj: Ident,
-        java_field: Ident,
-    },
-    FieldSet { // obj.field[: T] = ...
-        java_obj: Ident,
-        java_field: Ident,
-        signature: Option<JavaType>,
-        value: proc_macro2::TokenStream,
-    },
-    ArrayRead { // [let x[: T] = ]array\[...\]
-        binding: Option<Ident>,
-        signature: Option<JavaType>,
-        array: Ident,
-        index: proc_macro2::TokenStream,
-    },
-    ArraySet { // array[...] = ...
-        array: Ident,
-        index: proc_macro2::TokenStream,
-        value: proc_macro2::TokenStream,
-    },
-    StaticCall { // [let x[: T] = ]Class::func(..., ...)
-        binding: Option<Ident>,
-        signature: Option<JavaType>,
-        class: Ident,
-        func: Ident,
-        args: Vec<proc_macro2::TokenStream>,
-    },
-    MethodCall { // [let x[: T] = ]obj.func(..., ...)
-        binding: Option<Ident>,
-        signature: Option<JavaType>,
-        java_obj: Ident,
-        func: Ident,
-        args: Vec<proc_macro2::TokenStream>,
-    },
-    New { // [let x = ]new Class(..., ...)
-        binding: Option<Ident>,
-        class: Ident,
-        args: Vec<proc_macro2::TokenStream>,
-    },
-    Alloc { // [let x = ]alloc Class()
-        binding: Option<Ident>,
-        class: Ident,
-    },
-    ThrowNew {
-        error: DottedName,
-        msg: proc_macro2::TokenStream,
-    },
-    ThrowObj {
-        obj: Ident,
+impl Display for DottedName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.0
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        write!(f, "{}", n)
     }
 }
 
-// parse helper structs
-#[derive(Clone, Debug, PartialEq)]
-struct DottedName(Vec<Ident>);
-impl Parse for DottedName {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut names = Vec::new();
-        loop {
-            let name: Ident = input.parse()?;
-            names.push(name);
-            if input.peek(Token![.]) {
-                let _ = input.parse::<Token![.]>()?;
-            } else {
-                break Ok(Self(names))
-            }
-        }
-    }
+pub(crate) struct JavaClassDef {
+    pub(crate) package: DottedName,
+    pub(crate) imports: Vec<JavaImport>,
+    pub(crate) uses: Vec<JavaUse>,
+    pub(crate) class: JavaClass,
+    pub(crate) errors: Vec<TokenStream>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Prefix {
-    Crate,
+
+pub(crate) struct JavaImport {
+    pub(crate) item: DottedName,
+}
+
+pub(crate) struct JavaUse {
+    pub(crate) rust_path: PathSepName,
+    pub(crate) java_path: DottedName,
+}
+
+#[derive(Default)]
+pub(crate) enum PathSepPrefix {
+    #[default]
+    None,
     This,
     Super,
-    None,
-}
-#[derive(Clone, Debug)]
-struct ScopedName(Prefix, Vec<Ident>);
-impl Parse for ScopedName {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut names = Vec::new();
-        let prefix = if input.peek(Token![self]) {
-            let _ = input.parse::<Token![self]>()?;
-            let _ = input.parse::<Token![::]>()?;
-            Prefix::This
-        } else if input.peek(Token![super]) {
-            let _ = input.parse::<Token![super]>()?;
-            let _ = input.parse::<Token![::]>()?;
-            Prefix::Super
-        } else if input.peek(Token![crate]) {
-            let _ = input.parse::<Token![crate]>()?;
-            let _ = input.parse::<Token![::]>()?;
-            Prefix::Crate
-        } else {
-            Prefix::None
-        };
-        loop {
-            if input.peek(Ident) && input.peek2(Token![::]) {
-                let name: Ident = input.parse()?;
-                let _ = input.parse::<Token![::]>()?;
-                names.push(name);
-            } else {
-                break Ok(Self(prefix, names))
-            }
-        }
-    }
+    Crate,
 }
 
-mod kw {
-    syn::custom_keyword!(class);
-    syn::custom_keyword!(package);
-    syn::custom_keyword!(native);
-    syn::custom_keyword!(import);
-    syn::custom_keyword!(void);
-    syn::custom_keyword!(boolean);
-    syn::custom_keyword!(byte);
-    syn::custom_keyword!(char);
-    syn::custom_keyword!(short);
-    syn::custom_keyword!(int);
-    syn::custom_keyword!(long);
-    syn::custom_keyword!(float);
-    syn::custom_keyword!(double);
-    syn::custom_keyword!(java);
-    syn::custom_keyword!(new);
-    syn::custom_keyword!(alloc);
-    syn::custom_keyword!(throw);
+pub(crate) struct PathSepName {
+    pub(crate) prefix: PathSepPrefix,
+    pub(crate) parts: Punctuated<Ident, Token![::]>,
 }
 
-// state
-impl DottedName {
-    fn first(&self) -> &Ident {
-        self.0.first().unwrap()
-    }
-    fn last(&self) -> &Ident {
-        self.0.last().unwrap()
-    }
-    fn last_mut(&mut self) -> &mut Ident {
-        self.0.last_mut().unwrap()
-    }
-    fn is_dotted(&self) -> bool {
-        self.0.len() > 1
-    }
-    fn class_path(&self) -> String {
-        format!("L{};", self.partial_class_path())
-    }
-    fn partial_class_path(&self) -> String {
-        self.0.iter().map(ToString::to_string).collect::<Vec<String>>().join("/")
-    }
-}
-impl Display for DottedName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.iter().map(ToString::to_string).collect::<Vec<String>>().join("."))
-    }
-}
-impl ScopedName {
-    fn push(&mut self, name: Ident) {
-        self.1.push(name);
-    }
-    fn last_mut(&mut self) -> &mut Ident {
-        self.1.last_mut().unwrap()
-    }
-}
-impl JavaImports {
-    fn add(&mut self, import: DottedName) {
-        let name = import.last().to_string();
-        self.java_types.insert(name, import);
-    }
-    fn add_use(&mut self, scoped: ScopedName, import: DottedName) {
-        let name = import.last().to_string();
-        self.java_types.insert(name.clone(), import);
-        self.rust_types.insert(name, scoped);
-    }
-    fn resolve_rust_type(&self, o: &DottedName) -> Type {
-        if o.to_string() == "java.lang.Object" {
-            parse_quote!(jni::objects::JObject<'c>)
-        } else {
-            let n = o.last();
-            let nn = n.to_string();
-            if let Some(rt) = self.rust_types.get(&nn) {
-                let mut rt = rt.clone();
-                *rt.last_mut() = n.clone();
-                parse_quote!(#rt<'c>)
-            } else {
-                parse_quote!(jni::objects::JObject<'c>)
-            }
-        }
-    }
+pub(crate) struct JavaClass {
+    pub(crate) name: Ident,
+    pub(crate) body: ClassBody,
 }
 
-// Primary parsers
-impl Parse for JavaMod {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let _ = input.parse::<kw::package>()?;
-        let package: DottedName = input.parse()?;
-        let _ = input.parse::<Token![;]>()?;
-
-        let mut import_paths = JavaImports::default();
-        loop {
-            if input.peek(kw::import) {
-                let _ = input.parse::<kw::import>()?;
-                let io: DottedName = input.parse()?;
-                let _ = input.parse::<Token![;]>()?;
-                import_paths.add(io);
-            } else if input.peek(Token![use]) {
-                let _ = input.parse::<Token![use]>()?;
-                let mut scoped: ScopedName = input.parse()?;
-                let path: DottedName = input.parse()?;
-                let _ = input.parse::<Token![;]>()?;
-                scoped.push(path.last().clone());
-                import_paths.add_use(scoped, path);
-            } else {
-                break
-            }
-        }
-
-        let class: JavaClass = input.parse()?;
-
-        Ok(Self {
-            package,
-            import_paths,
-            class,
-        })
-    }
+pub(crate) struct ClassBody {
+    pub(crate) fields: Vec<JavaField>,
+    pub(crate) bindings: Vec<JavaBinding>,
+    pub(crate) natives: Vec<NativeFunction>,
+    pub(crate) errors: Vec<TokenStream>,
 }
 
-impl Parse for JavaClass {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let _ = input.parse::<kw::class>()?;
-        let name: Ident = input.parse()?;
-        let body;
-        braced!(body in input);
-        let body: JavaClassBody = body.parse()?;
-        Ok(Self {
-            name,
-            body,
-        })
-    }
+pub(crate) struct JavaField {
+    pub(crate) static_tk: Option<Token![static]>,
+    pub(crate) name: Ident,
+    pub(crate) typ: JavaType,
 }
 
-impl Parse for JavaClassBody {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut fields = Vec::new();
-        let mut natives = Vec::new();
-        let mut externs = Vec::new();
-        while !input.is_empty() {
-            if input.peek(kw::native) || input.peek2(kw::native) {
-                let native = NativeFunction::parse(input)?;
-                natives.push(native);
-            } else if input.peek(Token![fn]) || input.peek2(Token![fn]) {
-                let ext: ExternFunction = input.parse()?;
-                externs.push(ext);
-            } else {
-                let name: Ident = input.parse()?;
-                let _ = input.parse::<Token![:]>()?;
-                let ty: JavaType = input.parse()?;
-                let _ = input.parse::<Token![;]>()?;
-                fields.push(JavaField { name, signature: ty });
-            }
-        }
-
-        Ok(Self {
-            fields,
-            natives,
-            externs,
-        })
-    }
+pub(crate) struct JavaBinding {
+    pub(crate) static_tk: Option<Token![static]>,
+    pub(crate) signature: JavaFnSignature,
 }
 
-impl Parse for JavaCodeBlock {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let statements = Punctuated::parse_terminated(input)?;
-        Ok(Self { statements })
-    }
+pub(crate) struct NativeFunction {
+    pub(crate) static_tk: Option<Token![static]>,
+    pub(crate) signature: JavaFnSignature,
+    pub(crate) body: JavaCodeBlock,
 }
 
-impl Parse for JavaCodeStatement {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-
-        macro_rules! try_parse {
-            ($f:tt) => {
-                let fork = input.fork();
-                if let Some(res) = Self::$f(&fork) {
-                    input.advance_to(&fork);
-                    match res {
-                        Ok(v) => return Ok(v),
-                        Err(e) => return Ok(Self::Misc(e.to_compile_error()))
-                    }
-                }
-            };
-        }
-
-        try_parse!(parse_throw);
-
-        input.step(|cursor| {
-            let mut rest = *cursor;
-            let mut stream = proc_macro2::TokenStream::new();
-            while let Some((tt, next)) = rest.token_tree() {
-                stream.append(tt.clone());
-                match &tt {
-                    TokenTree::Punct(punct) if punct.as_char() == ';' => {
-                        return Ok((Self::Misc(stream), next));
-                    }
-                    _ => rest = next,
-                }
-            }
-            Ok((Self::Misc(stream), rest))
-        })
-
-    }
-}
-impl JavaCodeStatement {
-    fn parse_throw(input: ParseStream) -> Option<syn::Result<Self>> {
-        if input.peek(kw::throw) {
-            Some({
-                let _ = input.parse::<kw::throw>().unwrap();
-                if input.peek(kw::new) {
-                    let _ = input.parse::<kw::new>().unwrap();
-                    let class = match input.parse::<DottedName>() {
-                        Ok(name) => name,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    let args = match (|| {
-                        let args;
-                        parenthesized!(args in input);
-                        Ok(args)
-                    })() {
-                        Ok(args) => args,
-                        Err(e) => return Some(Err(e))
-                    };
-                    Ok(Self::ThrowNew {
-                        error: class,
-                        msg: args
-                            .parse::<proc_macro2::TokenStream>()
-                            .unwrap()
-                    })
-                } else {
-                    match input.parse::<Ident>() {
-                        Ok(i) => Ok(Self::ThrowObj { obj: i }),
-                        Err(e) => Err(e)
-                    }
-                }
-            })
-        } else {
-            None
-        }
-    }
+pub(crate) struct JavaFnSignature {
+    pub(crate) fn_tk: Token![fn],
+    pub(crate) name: Ident,
+    pub(crate) params: Punctuated<JavaParam, Token![,]>,
+    pub(crate) arrow: Option<Token![->]>,
+    pub(crate) returns: JavaType,
 }
 
-impl NativeFunction {
-    fn parse(input: ParseStream, class_info: &ClassInfo) -> syn::Result<Self> {
-        let is_static = if input.peek(Token![static]) {
-            let _ = input.parse::<Token![static]>()?;
-            let _ = input.parse::<kw::native>()?;
-            true
-        } else {
-            let _ = input.parse::<kw::native>()?;
-            false
-        };
-
-        let signature: JavaSignature = input.parse()?;
-
-        let body;
-        braced!(body in input);
-
-        let body = body.step(|cursor| {
-            let mut body_out = proc_macro2::TokenStream::new();
-            let mut rest = *cursor;
-            while let Some((tt, next)) = rest.token_tree() {
-                body_out.append(tt.clone());
-                match tt {
-                    TokenTree::Ident(i) if i == "java" => {
-                        if let Some((content, span, next)) = next.group(proc_macro2::Delimiter::Brace) {
-                            let content = content.token_stream();
-                            let block: JavaCodeBlock = parse_quote!(#content);
-                            // UGHHHHHH
-                            body_out.append_all(block.to_tokens(class_info));
-                            rest = next;
-                        }
-                    },
-                    _ => rest = next,
-                }
-            }
-            Ok((body_out, rest))
-        })?;
-
-        Ok(Self {
-            is_static,
-            signature,
-            body,
-        })
-    }
-}
-impl Parse for ExternFunction {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let is_static = if input.peek(Token![static]) {
-            let _ = input.parse::<Token![static]>()?;
-            true
-        } else {
-            false
-        };
-
-        let signature: JavaSignature = input.parse()?;
-
-        let _ = input.parse::<Token![;]>()?;
-
-        Ok(Self {
-            is_static,
-            signature,
-        })
-    }
-}
-impl Parse for JavaSignature {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let _ = input.parse::<Token![fn]>()?;
-        let name: Ident = input.parse()?;
-        let raw_args;
-        parenthesized!(raw_args in input);
-        let mut args = Vec::new();
-
-        while !raw_args.is_empty() {
-            let name: Ident = raw_args.parse()?;
-            let _ = raw_args.parse::<Token![:]>()?;
-            let typ: JavaType = raw_args.parse()?;
-            args.push(JavaArg { name, typ });
-            if raw_args.peek(Token![,]) {
-                let _ = raw_args.parse::<Token![,]>()?;
-            }
-        }
-
-        let returns = if input.peek(Token![->]) {
-            let _ = input.parse::<Token![->]>()?;
-            input.parse()?
-        } else {
-            JavaType::Void
-        };
-
-        Ok(Self {
-            name,
-            args,
-            returns,
-        })
-    }
+pub(crate) struct JavaParam {
+    pub(crate) name: Ident,
+    pub(crate) typ: JavaType,
 }
 
-impl Parse for JavaType {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        #[allow(unused_labels)]
-        let mut base = 'base: {
-            macro_rules! check {
-                ($kw:tt, $typ:tt) => {
-                    if input.peek(kw::$kw) { let _ = input.parse::<kw::$kw>()?; break 'base Self::$typ }
-                };
-            }
-            check!(boolean, Boolean);
-            check!(byte, Byte);
-            check!(char, Char);
-            check!(short, Short);
-            check!(int, Int);
-            check!(long, Long);
-            check!(float, Float);
-            check!(double, Double);
-
-            let name: DottedName = input.parse()?;
-
-            let n = name.to_string();
-            if n == "String" || n == "java.lang.String" {
-                JavaType::String
-            } else {
-                JavaType::Object(name)
-            }
-        };
-
-        while input.peek(syn::token::Bracket) {
-            let i;
-            bracketed!(i in input);
-            base = JavaType::Array(Box::new(base));
-        }
-
-        Ok(base)
-    }
+pub(crate) struct JavaCodeBlock {
+    pub(crate) delimiter: Delimiter,
+    pub(crate) sections: Vec<CodeSection>,
 }
 
-// Primary output
-impl JavaMod {
-    fn resolve(&mut self) {
-        self.import_paths.add(parse_str::<DottedName>(&format!("{}.{}", self.package, self.class.name)).unwrap());
-        self.import_paths.add(parse_str::<DottedName>("java.lang.Object").unwrap());
-        self.import_paths.add(parse_str::<DottedName>("java.lang.String").unwrap());
-
-        self.class.body.resolve(&self.import_paths);
-    }
-}
-impl JavaClassBody {
-    fn resolve(&mut self, imports: &JavaImports) {
-        for ext in self.externs.iter_mut() {
-            ext.signature.resolve(imports);
-        }
-        for nat in self.natives.iter_mut() {
-            nat.signature.resolve(imports);
-        }
-    }
-}
-impl JavaSignature {
-    fn resolve(&mut self, imports: &JavaImports) {
-        for arg in self.args.iter_mut() {
-            arg.typ.resolve(imports);
-        }
-        self.returns.resolve(imports);
-    }
-    fn jni_sig(&self) -> String {
-        let args = self.args.iter().map(|t| t.typ.signature()).collect::<Vec<_>>().join("");
-        let ret = self.returns.signature();
-        format!("({args}){ret}")
-    }
-}
-impl JavaType {
-    fn resolve(&mut self, imports: &JavaImports) {
-        if let Self::Object(name) = self {
-            if !name.is_dotted() {
-                let n = name.first().to_string();
-                if let Some(path) = imports.java_types.get(&n) {
-                    let l = name.0.pop().unwrap();
-                    *name = (*path).clone();
-                    *name.last_mut() = l;
-                }
-            }
-        } else if let Self::Array(a) = self {
-            a.resolve(imports);
-        }
-    }
-    fn is_primitive(&self) -> bool {
-        !matches!(self, Self::String | Self::Object(_) | Self::Array(_))
-    }
-    fn is_custom_object(&self) -> bool {
-        if let Self::Object(o) = self {
-            let n = o.to_string();
-            n != "java.lang.Object"
-        } else {
-            false
-        }
-    }
-
-    fn to_rust_return_type(&self, imports: &JavaImports) -> Type {
-        match self {
-            JavaType::Void => parse_quote!(()),
-            JavaType::Boolean => parse_quote!(bool),
-            JavaType::Byte => parse_quote!(i8),
-            JavaType::Char => parse_quote!(u16),
-            JavaType::Short => parse_quote!(i16),
-            JavaType::Int => parse_quote!(i32),
-            JavaType::Long => parse_quote!(i64),
-            JavaType::Float => parse_quote!(f32),
-            JavaType::Double => parse_quote!(f64),
-            JavaType::String => parse_quote!(jni::objects::JString<'c>),
-            JavaType::Object(o) => {
-                imports.resolve_rust_type(o)
-            }
-            JavaType::Array(a) => {
-                let at = a.to_rust_concrete_type(imports);
-                if a.is_primitive() {
-                    parse_quote!(jni::objects::JPrimitiveArray<'c, #at>)
-                } else {
-                    parse_quote!(jni::objects::JObjectArray<'c, #at>)
-                }
-            }
-        }
-    }
-    fn to_rust_type(&self, imports: &JavaImports) -> Type {
-        match self {
-            JavaType::Void => parse_quote!(()),
-            JavaType::Boolean => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jboolean>),
-            JavaType::Byte => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jbyte>),
-            JavaType::Char => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jchar>),
-            JavaType::Short => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jshort>),
-            JavaType::Int => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jint>),
-            JavaType::Long => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jlong>),
-            JavaType::Float => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jfloat>),
-            JavaType::Double => parse_quote!(impl JavaTyped<'c, JType=jni::sys::jdouble>),
-            JavaType::String => parse_quote!(impl JavaTyped<'c, JType=jni::objects::JString<'c>>),
-            JavaType::Object(o) => {
-                imports.resolve_rust_type(o)
-            }
-            JavaType::Array(a) => {
-                let at = a.to_rust_concrete_type(imports);
-                if a.is_primitive() {
-                    parse_quote!(impl JavaTyped<'c, JType=JPrimitiveArray<'c, #at>>)
-                } else {
-                    parse_quote!(impl JavaTyped<'c, JType=JObjectArray<'c, #at>>)
-                }
-            }
-        }
-    }
-    fn to_rust_concrete_type(&self, imports: &JavaImports) -> Type {
-        match self {
-            JavaType::Void => parse_quote!(()),
-            JavaType::Boolean => parse_quote!(jni::sys::jboolean),
-            JavaType::Byte => parse_quote!(jni::sys::jbyte),
-            JavaType::Char => parse_quote!(jni::sys::jchar),
-            JavaType::Short => parse_quote!(jni::sys::jshort),
-            JavaType::Int => parse_quote!(jni::sys::jint),
-            JavaType::Long => parse_quote!(jni::sys::jlong),
-            JavaType::Float => parse_quote!(jni::sys::jfloat),
-            JavaType::Double => parse_quote!(jni::sys::jdouble),
-            JavaType::String => parse_quote!(jni::objects::JString<'c>),
-            JavaType::Object(o) => {
-                imports.resolve_rust_type(o)
-            }
-            JavaType::Array(a) => {
-                let at = a.to_rust_concrete_type(imports);
-                if a.is_primitive() {
-                    parse_quote!(jni::objects::JPrimitiveArray<'c, #at>)
-                } else {
-                    parse_quote!(jni::objects::JObjectArray<'c, #at>)
-                }
-            }
-        }
-    }
-    fn to_rust_simplified_type(&self) -> Type {
-        match self {
-            JavaType::Void => parse_quote!(()),
-            JavaType::Boolean => parse_quote!(jni::sys::jboolean),
-            JavaType::Byte => parse_quote!(jni::sys::jbyte),
-            JavaType::Char => parse_quote!(jni::sys::jchar),
-            JavaType::Short => parse_quote!(jni::sys::jshort),
-            JavaType::Int => parse_quote!(jni::sys::jint),
-            JavaType::Long => parse_quote!(jni::sys::jlong),
-            JavaType::Float => parse_quote!(jni::sys::jfloat),
-            JavaType::Double => parse_quote!(jni::sys::jdouble),
-            JavaType::String => parse_quote!(jni::objects::JString<'c>),
-            JavaType::Object(_) => {
-                parse_quote!(jni::objects::JObject<'c>)
-            }
-            JavaType::Array(a) => {
-                let at = a.to_rust_simplified_type();
-                if a.is_primitive() {
-                    parse_quote!(jni::objects::JPrimitiveArray<'c, #at>)
-                } else {
-                    parse_quote!(jni::objects::JObjectArray<'c, #at>)
-                }
-            }
-        }
-    }
-}
-impl JavaArg {
-    fn convert_rust_to_java(&self, _imports: &JavaImports) -> proc_macro2::TokenStream {
-        let name = &self.name;
-        quote! {
-            let #name = JavaTyped::into_java(#name, env)?;
-        }
-    }
-    fn to_rust_arg(&self, imports: &JavaImports) -> RustArg {
-        let typ: Type = self.typ.to_rust_type(imports);
-
-        RustArg {
-            name: self.name.clone(),
-            typ,
-        }
-    }
-}
-struct RustArg {
-    name: Ident,
-    typ: Type,
+pub(crate) enum CodeSection {
+    Tokens(TokenStream),
+    Block(JavaCodeBlock),
+    Java(JavaExpression),
 }
 
-impl ToTokens for JavaMod {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let name = &self.class.name;
-        let package_class = format!("{}.{}", self.package, name);
-        let class_path = format!("L{}/{};", self.package.partial_class_path(), name);
-
-        let native_registrations = if self.class.body.natives.is_empty() {
-            quote!()
-        } else {
-            let mut nats = proc_macro2::TokenStream::default();
-            for nat in self.class.body.natives.iter() {
-                let name = &nat.signature.name;
-                let body = &nat.body;
-                let body = quote!({#body});
-                let args = nat.signature.args
-                    .iter()
-                    .map(|a| {
-                        let JavaArg { name, typ } = a;
-                        let typ = typ.to_rust_concrete_type(&self.import_paths);
-                        quote! {
-                            #name: #typ
-                        }
-                    });
-
-                let ret_typ = nat.signature.returns.to_rust_simplified_type();
-
-                let body = if nat.signature.returns == JavaType::Void {
-                    quote! {
-                        { #body; Ok(()) }
-                    }
-                } else if nat.signature.returns.is_primitive() {
-                    quote! {
-                        {
-                            let x = #body;
-                            Ok(x)
-                        }
-                    }
-                } else if nat.signature.returns.is_custom_object() {
-                    quote! {
-                        {
-                            let v = #body;
-                            Ok(v.into_java(env)?.into())
-                        }
-                    }
-                } else {
-                    quote! {
-                        {
-                            let v = #body;
-                            v.into_java(env)
-                        }
-                    }
-                };
-
-                let func = if nat.is_static {
-                    quote! {
-                        fn #name<'c>(
-                            env: &mut jni::Env<'c>,
-                            class: jni::objects::JClass<'c>,
-                            #(#args),*
-                        ) -> jni::errors::Result<#ret_typ> #body
-                    }
-                } else {
-                    quote! {
-                        fn #name<'c>(
-                            env: &mut jni::Env<'c>,
-                            this: jni::objects::JObject<'c>,
-                            #(#args),*
-                        ) -> jni::errors::Result<#ret_typ> #body
-                    }
-                };
-
-                let stat = if nat.is_static {
-                    quote!(static)
-                } else {
-                    quote!()
-                };
-                let arg_types = nat.signature.args
-                    .iter()
-                    .map(|t|
-                        parse_str::<proc_macro2::TokenStream>(&t.typ.jtype().unwrap())
-                            .map_err(|e| e.to_compile_error())
-                            .unwrap_or_else(|t| t))
-                    .collect::<Vec<_>>();
-                let ret = nat.signature.returns.jtype()
-                    .map(|t| {
-                        let t = parse_str::<proc_macro2::TokenStream>(&t)
-                            .map_err(|e| e.to_compile_error())
-                            .unwrap_or_else(|t| t);
-                        quote!(-> #t)
-                    }
-                    ).unwrap_or_default();
-                nats.append_all(quote! {
-                    const _: jni::NativeMethod = jni::native_method!{
-                        java_type = #package_class, #stat extern fn #name(#(#arg_types),*)#ret,
-                    };
-                    #func
-                });
-            }
-            quote! {
-                const _: () = const {
-                    #nats
-                };
-            }
-        };
-
-        let (validation_checks, methods) = if self.class.body.externs.is_empty() {
-            (quote!(), quote!())
-        } else {
-            let mut exts = proc_macro2::TokenStream::default();
-            let mut methods = proc_macro2::TokenStream::default();
-
-            for ext in self.class.body.externs.iter() {
-                let name = ext.signature.name.to_string();
-                let sig = ext.signature.jni_sig();
-                if ext.is_static {
-                    exts.append_all(quote! {
-                        env.get_static_method_id(
-                            jni::jni_str!(#package_class),
-                            jni::jni_str!(#name),
-                            jni::jni_sig!(#sig),
-                        )?;
-                    });
-                } else {
-                    exts.append_all(quote! {
-                        env.get_method_id(
-                            jni::jni_str!(#package_class),
-                            jni::jni_str!(#name),
-                            jni::jni_sig!(#sig),
-                        )?;
-                    });
-                }
-                let method = {
-                    let name = &ext.signature.name;
-                    let sig = ext.signature.jni_sig();
-                    let display_name = name.to_string();
-                    let mut conversions = Vec::new();
-                    let mut params = Vec::new();
-                    let args = ext.signature.args
-                        .iter()
-                        .map(|a| {
-                            conversions.push(a.convert_rust_to_java(&self.import_paths));
-                            let name = &a.name;
-                            params.push(if a.typ.is_primitive() {
-                                quote! { #name.into() }
-                            } else {
-                                quote! { (&#name).into() }
-                            });
-                            a.to_rust_arg(&self.import_paths)
-                        });
-
-                    let ret = ext.signature.returns.to_rust_return_type(&self.import_paths);
-
-                    let capt = if ext.signature.returns == JavaType::Void {
-                        quote!()
-                    } else {
-                        quote!(let ret = )
-                    };
-
-                    let ret_conv = match &ext.signature.returns {
-                        JavaType::Void => quote!(Ok(())),
-                        JavaType::Boolean => quote! { ret.z() },
-                        JavaType::Byte => quote! { ret.b() },
-                        JavaType::Char => quote! { ret.c() },
-                        JavaType::Short => quote! { ret.s() },
-                        JavaType::Int => quote! { ret.i() },
-                        JavaType::Long => quote! { ret.j() },
-                        JavaType::Float => quote! { ret.f() },
-                        JavaType::Double => quote! { ret.d() },
-                        JavaType::String => quote! { jni::objects::JString::cast_local(env, ret.l()?) },
-                        JavaType::Object(o) => {
-                            if o.to_string() == "java.lang.Object" {
-                                quote!(ret.l())
-                            } else {
-                                let n = o.last();
-                                let nn = n.to_string();
-                                if let Some(rt) = self.import_paths.rust_types.get(&nn) {
-                                    let mut rt = rt.clone();
-                                    *rt.last_mut() = n.clone();
-                                    quote! { Ok(#rt(ret.l()?)) }
-                                } else {
-                                    quote! { ret.l() }
-                                }
-                            }
-                        },
-                        array @ JavaType::Array(_) => {
-                            let t = array.to_rust_concrete_type(&self.import_paths);
-                            quote! {
-                                env.cast_local::<#t>(ret.l()?)
-                            }
-                        },
-                    };
-
-                    if ext.is_static {
-                        quote! {
-                            pub fn #name<'c, 'r>(env: &'r mut jni::Env<'c>, #(#args),*) -> Result<#ret, jni::errors::Error> {
-                                #(#conversions)*
-                                #capt env.call_static_method(
-                                    jni::jni_str!(#package_class),
-                                    jni::jni_str!(#display_name),
-                                    jni::jni_sig!(#sig),
-                                    &[#(#params),*]
-                                )?;
-                                #ret_conv
-                            }
-                        }
-                    } else {
-                        quote! {
-
-                        }
-                    }
-                };
-                methods.append_all(method);
-            }
-
-            (exts, methods)
-        };
-
-        tokens.append_all(quote! {
-            #native_registrations
-            #[derive(Default)]
-            pub struct #name<'local>(jni::objects::JObject<'local>);
-            impl<'local> JavaTyped<'local> for #name<'local> {
-                type JType = jni::objects::JObject<'local>;
-                fn into_java<'r>(self, env: &'r mut jni::Env<'local>) -> jni::errors::Result<Self::JType> {
-                    Ok(self.0)
-                }
-            }
-            impl<'local> std::ops::Deref for #name<'local> {
-                type Target = jni::objects::JObject<'local>;
-                fn deref(&self) -> &Self::Target {
-                    &self.0
-                }
-            }
-            unsafe impl jni::refs::Reference for #name<'_> {
-                type Kind<'env> = #name<'env>;
-                type GlobalKind = #name<'static>;
-                fn as_raw(&self) -> jni::sys::jobject { self.0.as_raw() }
-                fn class_name() -> std::borrow::Cow<'static, jni::strings::JNIStr> {
-                    std::borrow::Cow::Borrowed(jni::jni_str!(#package_class))
-                }
-                fn lookup_class<'caller>(
-                    env: &jni::Env<'_>,
-                    loader_context: &jni::refs::LoaderContext
-                ) -> jni::errors::Result<impl std::ops::Deref<Target = jni::refs::Global<jni::objects::JClass<'static>>> + 'caller> {
-                    jni::objects::JObject::lookup_class(env, loader_context)
-                }
-            }
-            impl<'l> AsRef<jni::objects::JObject<'l>> for #name<'l> {
-                fn as_ref(&self) -> &jni::objects::JObject<'l> { &self.0 }
-            }
-            impl<'l> From<#name<'l>> for jni::objects::JObject<'l> {
-                fn from(value: #name<'l>) -> Self {
-                    value.0
-                }
-            }
-            impl<'l> From<jni::objects::JObject<'l>> for #name<'l> {
-                fn from(value: jni::objects::JObject<'l>) -> Self {
-                    Self(value)
-                }
-            }
-            impl<'local> #name<'local> {
-                pub const JAVA_SIGNATURE: jni::signature::FieldSignature<'static> = jni::jni_sig!(#class_path);
-                pub fn _validate_interface(env: &mut jni::Env<'_>) -> jni::errors::Result<()> {
-                    #validation_checks
-                    Ok(())
-                }
-
-                #methods
-            }
-        });
-    }
+/// Matches:
+///  <expr>
+///  #Class::field #["..."] = ...;
+///  #obj.field #["..."] = ...;
+///  #arr[...] #["..."] = ...;
+///  #throw new Error("...");
+///  #throw ...;
+pub(crate) enum JavaExpression {
+    Expr(JavaExpr),
+    StaticFieldWrite(JavaStaticFieldWrite),
+    FieldWrite(JavaFieldWrite),
+    ArrayWrite(JavaArrayWrite),
+    ThrowNew(JavaThrowNew),
+    ThrowObj(JavaThrowObj),
 }
 
-impl ToTokens for RustArg {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let Self { name, typ } = &self;
-        tokens.append_all(quote! {
-            #name: #typ
-        })
-    }
+/// Matches:
+///  #Class::func(...) #["..."]
+///  #obj.method(...) #["..."]
+///  #Class::field #["..."]
+///  #obj.field #["..."]
+///  #arr[...] #["..."]
+///  #new Class(...) #["..."]
+///  #alloc Class()
+///  (error) #...;
+pub(crate) enum JavaExpr {
+    Error(TokenStream),
+    StaticCall(JavaStaticCall),
+    MethodCall(JavaMethodCall),
+    StaticFieldRead(JavaStaticFieldRead),
+    FieldRead(JavaFieldRead),
+    ArrayRead(Box<JavaArrayRead>),
+    New(JavaNew),
+    Alloc(JavaAlloc),
 }
 
-impl ToTokens for ScopedName {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let names = &self.1;
-        let prefix = match self.0 {
-            Prefix::Crate => quote!(crate::),
-            Prefix::This => quote!(self::),
-            Prefix::Super => quote!(super::),
-            Prefix::None => quote!()
-        };
-        tokens.append_all(quote! {
-            #prefix #(#names)::*
-        })
-    }
+/// Matches:
+///  <expr>
+///  or
+///  {...}
+pub(crate) enum JavaValueExpr {
+    Expr(JavaExpr),
+    Block(JavaCodeBlock),
 }
 
-impl JavaType {
-    fn type_name(&self) -> Cow<'static, str> {
-        Cow::Borrowed(match self {
-            JavaType::Void => "void",
-            JavaType::Boolean => "boolean",
-            JavaType::Byte => "byte",
-            JavaType::Char => "char",
-            JavaType::Short => "short",
-            JavaType::Int => "int",
-            JavaType::Long => "long",
-            JavaType::Float => "float",
-            JavaType::Double => "double",
-            JavaType::String => "java.lang.String",
-            JavaType::Object(o) => return Cow::Owned(o.to_string()),
-            JavaType::Array(a) => return Cow::Owned(format!("{}[]", a.type_name()))
-        })
-    }
-    fn jtype(&self) -> Option<Cow<'static, str>> {
-        Some(Cow::Borrowed(match self {
-            JavaType::Void => return None,
-            JavaType::Boolean => "boolean",
-            JavaType::Byte => "byte",
-            JavaType::Char => "char",
-            JavaType::Short => "short",
-            JavaType::Int => "int",
-            JavaType::Long => "jlong",
-            JavaType::Float => "float",
-            JavaType::Double => "double",
-            JavaType::String => "java.lang.String",
-            JavaType::Object(o) => return Some(Cow::Owned(o.to_string())),
-            JavaType::Array(a) => return Some(Cow::Owned(format!("{}[]", a.type_name())))
-        }))
-    }
-    fn signature(&self) -> Cow<'static, str> {
-        Cow::Borrowed(match self {
-            JavaType::Void => "V",
-            JavaType::Boolean => "Z",
-            JavaType::Byte => "B",
-            JavaType::Char => "C",
-            JavaType::Short => "S",
-            JavaType::Int => "I",
-            JavaType::Long => "J",
-            JavaType::Float => "F",
-            JavaType::Double => "D",
-            JavaType::String => "Ljava/lang/String;",
-            JavaType::Object(o) => return Cow::Owned(o.class_path()),
-            JavaType::Array(a) => return Cow::Owned(format!("[{}", a.signature()))
-        })
-    }
+/// matches function and field signatures:
+/// #["V(Ljava/lang/String;)"]
+/// #["Z"]
+pub(crate) struct JavaSignatureTag(LitStr);
+
+/// #Unknown::func(...) #["V(Ljava/lang/String;IIF)"]
+pub(crate) struct JavaStaticCall {
+    pub(crate) class: DottedName,
+    pub(crate) func: Ident,
+    pub(crate) args: Punctuated<JavaValueExpr, Token![,]>,
+    /// May be None if the function has no args and the return type can be inferred or is void.
+    pub(crate) signature: Option<JavaSignatureTag>,
 }
+
+/// #unknown.method(...) #["V(Ljava/lang/String;FF)"]
+pub(crate) struct JavaMethodCall {
+    pub(crate) obj: Ident,
+    pub(crate) func: Ident,
+    pub(crate) args: Punctuated<JavaValueExpr, Token![,]>,
+    /// May be None if the function has no args and the return type can be inferred or is void.
+    pub(crate) signature: Option<JavaSignatureTag>,
+}
+
+/// #Class::x #["J"]
+pub(crate) struct JavaStaticFieldRead {
+    pub(crate) class: DottedName,
+    pub(crate) field: Ident,
+    /// only needed if the type can't be inferred.
+    pub(crate) signature: Option<JavaSignatureTag>,
+}
+
+/// #Class::x #["Ljava/lang/String;"] = ...;
+pub(crate) struct JavaStaticFieldWrite {
+    pub(crate) class: DottedName,
+    pub(crate) field: Ident,
+    /// only needed if the type can't be inferred.
+    pub(crate) signature: Option<JavaSignatureTag>,
+    pub(crate) value: JavaValueExpr,
+}
+
+/// #this.x #["Ljava/lang/String;"] = ...;
+pub(crate) struct JavaFieldWrite {
+    pub(crate) obj: Ident,
+    pub(crate) field: Ident,
+    /// only needed if the type can't be inferred.
+    pub(crate) signature: Option<JavaSignatureTag>,
+    pub(crate) value: JavaValueExpr,
+}
+
+/// #this.x #["J"]
+pub(crate) struct JavaFieldRead {
+    pub(crate) obj: Ident,
+    pub(crate) field: Ident,
+    /// only needed if the type can't be inferred.
+    pub(crate) signature: Option<JavaSignatureTag>,
+}
+
+/// #arr[...] #["Z"] = ...;
+pub(crate) struct JavaArrayWrite {
+    pub(crate) array: Ident,
+    pub(crate) index: JavaValueExpr,
+    /// only needed if the type can't be inferred.
+    pub(crate) signature: Option<JavaSignatureTag>,
+    pub(crate) value: JavaValueExpr,
+}
+
+/// #arr[...] #["I"]
+pub(crate) struct JavaArrayRead {
+    pub(crate) array: Ident,
+    pub(crate) index: JavaValueExpr,
+    /// only needed if the type can't be inferred.
+    pub(crate) signature: Option<JavaSignatureTag>,
+}
+
+/// #throw new Class(...);
+pub(crate) struct JavaThrowNew {
+    pub(crate) class: DottedName,
+    pub(crate) message: JavaValueExpr,
+}
+
+/// #throw ...;
+pub(crate) struct JavaThrowObj {
+    pub(crate) value: JavaValueExpr,
+}
+
+/// #new Class(...) #["IJJLcom/beatcraft/interop/Note;"]
+pub(crate) struct JavaNew {
+    pub(crate) class: DottedName,
+    pub(crate) args: Punctuated<JavaValueExpr, Token![,]>,
+    /// May be None if the ctor has no args or can all be inferred.
+    pub(crate) signature: Option<JavaSignatureTag>,
+}
+
+/// #alloc Class()
+pub(crate) struct JavaAlloc {
+    pub(crate) class: DottedName,
+}
+
+/*
+ * java_class! {
+ *     package com.beatcraft.interop;
+ *
+ *     import org.joml.Vector3f;
+ *
+ *     use crate::com.beatcraft.interop.Info;
+ *
+ *     class BeatcraftCore {
+ *         handle: long;
+ *         static thing: int;
+ *
+ *         static native fn func(x: float, y: float) -> BeatcraftCore {
+ *             let handle = ...
+ *             let this = #alloc BeatcraftCore();
+ *             #this.handle = handle;
+ *             this
+ *         }
+ *         native fn method(x: float, y: float) -> float {
+ *             let handle = #this.handle;
+ *         }
+ *         static fn thing(...) -> ...;
+ *         fn thing2(...) -> ...;
+ *     }
+ *
+ * }
+ *
+ */
+
+#[proc_macro]
+pub fn java_class(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let class: JavaClassDef = parse_macro_input!(input);
+    let class = class.resolve();
+    quote! {
+        #class
+    }.into()
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,238 +1,10 @@
-use std::fmt::Display;
-
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use quote::TokenStreamExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Ident, LitStr, Token, braced, bracketed, parenthesized};
+use syn::{Ident, Token, braced, bracketed, parenthesized};
 
-use crate::lib2::{JavaType, kw};
-
-pub(crate) struct DottedName(Punctuated<Ident, Token![.]>);
-
-impl Display for DottedName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let n = self.0
-            .iter()
-            .map(|t| t.to_string())
-            .collect::<Vec<_>>()
-            .join(".");
-        write!(f, "{}", n)
-    }
-}
-
-pub(crate) struct JavaClassDef {
-    package: DottedName,
-    imports: Vec<JavaImport>,
-    uses: Vec<JavaUse>,
-    class: JavaClass,
-    errors: Vec<TokenStream>,
-}
-
-pub(crate) struct JavaImport {
-    import_tk: kw::import,
-    item: DottedName,
-}
-
-pub(crate) struct JavaUse {
-    use_tk: Token![use],
-    rust_path: PathSepName,
-    java_path: DottedName,
-}
-
-#[derive(Default)]
-pub(crate) enum PathSepPrefix {
-    #[default]
-    None,
-    This,
-    Super,
-    Crate,
-}
-
-pub(crate) struct PathSepName {
-    prefix: PathSepPrefix,
-    parts: Punctuated<Ident, Token![::]>,
-}
-
-pub(crate) struct JavaClass {
-    class_tk: kw::class,
-    name: Ident,
-    body: ClassBody,
-}
-
-pub(crate) struct ClassBody {
-    fields: Vec<JavaField>,
-    bindings: Vec<JavaBinding>,
-    natives: Vec<NativeFunction>,
-    errors: Vec<TokenStream>,
-}
-
-pub(crate) struct JavaField {
-    static_tk: Option<Token![static]>,
-    name: Ident,
-    typ: JavaType,
-}
-
-pub(crate) struct JavaBinding {
-    static_tk: Option<Token![static]>,
-    signature: JavaFnSignature,
-}
-
-pub(crate) struct NativeFunction {
-    static_tk: Option<Token![static]>,
-    native_tk: kw::native,
-    signature: JavaFnSignature,
-    body: JavaCodeBlock,
-}
-
-pub(crate) struct JavaFnSignature {
-    fn_tk: Token![fn],
-    name: Ident,
-    params: Punctuated<JavaParam, Token![,]>,
-    arrow: Option<Token![->]>,
-    returns: JavaType,
-}
-
-pub(crate) struct JavaParam {
-    name: Ident,
-    typ: JavaType,
-}
-
-pub(crate) struct JavaCodeBlock {
-    delimiter: Delimiter,
-    sections: Vec<CodeSection>,
-}
-
-pub(crate) enum CodeSection {
-    Tokens(TokenStream),
-    Block(JavaCodeBlock),
-    Java(JavaExpression),
-}
-
-pub(crate) enum JavaExpression {
-    Error(TokenStream),
-    StaticCall(JavaStaticCall),
-    MethodCall(JavaMethodCall),
-    StaticFieldWrite(JavaStaticFieldWrite),
-    StaticFieldRead(JavaStaticFieldRead),
-    FieldWrite(JavaFieldWrite),
-    FieldRead(JavaFieldRead),
-    ArrayWrite(JavaArrayWrite),
-    ArrayRead(JavaArrayRead),
-    ThrowNew(JavaThrowNew),
-    ThrowObj(JavaThrowObj),
-    New(JavaNew),
-    Alloc(JavaAlloc),
-}
-
-/// matches function and field signatures:
-/// #["V(Ljava/lang/String;)"]
-/// #["Z"]
-pub(crate) struct JavaSignatureTag(LitStr);
-
-/// #Unknown::func(...) #["V(Ljava/lang/String;IIF)"]
-pub(crate) struct JavaStaticCall {
-    class: DottedName,
-    func: Ident,
-    args: Punctuated<JavaValueExpr, Token![,]>,
-    /// May be None if the function has no args and the return type can be inferred or is void.
-    signature: Option<JavaSignatureTag>,
-}
-
-/// #unknown.method(...) #["V(Ljava/lang/String;FF)"]
-pub(crate) struct JavaMethodCall {
-    obj: Ident,
-    func: Ident,
-    args: Punctuated<JavaValueExpr, Token![,]>,
-    /// May be None if the function has no args and the return type can be inferred or is void.
-    signature: Option<JavaSignatureTag>,
-}
-
-/// #Class::x #["J"]
-pub(crate) struct JavaStaticFieldRead {
-    class: Ident,
-    field: Ident,
-    /// only needed if the type can't be inferred.
-    signature: Option<JavaSignatureTag>,
-}
-
-/// #Class::x #["Ljava/lang/String;"] = ...;
-pub(crate) struct JavaStaticFieldWrite {
-    class: Ident,
-    field: Ident,
-    /// only needed if the type can't be inferred.
-    signature: Option<JavaSignatureTag>,
-    value: JavaValueExpr,
-}
-
-/// #this.x #["Ljava/lang/String;"] = ...;
-pub(crate) struct JavaFieldWrite {
-    obj: Ident,
-    field: Ident,
-    /// only needed if the type can't be inferred.
-    signature: Option<JavaSignatureTag>,
-    value: JavaValueExpr,
-}
-
-/// #this.x #["J"]
-pub(crate) struct JavaFieldRead {
-    obj: Ident,
-    field: Ident,
-    /// only needed if the type can't be inferred.
-    signature: Option<JavaSignatureTag>,
-}
-
-/// #arr[...] #["Z"] = ...;
-pub(crate) struct JavaArrayWrite {
-    array: Ident,
-    index: JavaValueExpr,
-    /// only needed if the type can't be inferred.
-    signature: Option<JavaSignatureTag>,
-    value: JavaValueExpr,
-}
-
-/// #arr[...] #["I"]
-pub(crate) struct JavaArrayRead {
-    array: Ident,
-    index: JavaValueExpr,
-    /// only needed if the type can't be inferred.
-    signature: Option<JavaSignatureTag>,
-}
-
-/// #throw new Class(...);
-pub(crate) struct JavaThrowNew {
-    class: DottedName,
-    message: JavaValueExpr,
-}
-
-/// #throw ...;
-pub(crate) struct JavaThrowObj {
-    value: JavaValueExpr,
-}
-
-/// #new Class(...) #["IJJLcom/beatcraft/interop/Note;"]
-pub(crate) struct JavaNew {
-    class: DottedName,
-    args: Punctuated<JavaValueExpr, Token![,]>,
-    /// May be None if the ctor has no args or can all be inferred.
-    signature: Option<JavaSignatureTag>,
-}
-
-/// #alloc Class()
-pub(crate) struct JavaAlloc {
-    class: DottedName,
-}
-
-/// Matches any Java/rust expression that yields a value.
-/// Block may fail to yield a valid value, but allows inline rust easier.
-pub(crate) enum JavaValueExpr {
-    StaticCall(JavaStaticCall),
-    MethodCall(JavaMethodCall),
-    StaticFieldRead(JavaStaticFieldRead),
-    FieldRead(JavaFieldRead),
-    ArrayRead(Box<JavaArrayRead>),
-    New(JavaNew),
-    Block(JavaCodeBlock),
-}
+use crate::*;
 
 impl Parse for DottedName {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
@@ -281,22 +53,20 @@ impl Parse for JavaClassDef {
         while let is_import = input.peek(kw::import) && (is_import || input.peek(Token![use])) {
             match (|| -> syn::Result<()> {
                 if is_import {
-                    let import_tk = input.parse()?;
+                    let _ = input.parse::<kw::import>()?;
                     let item = input.parse()?;
                     let _ = input.parse::<Token![;]>()?;
 
                     imports.push(JavaImport {
-                        import_tk,
                         item,
                     });
                 } else {
-                    let use_tk = input.parse()?;
+                    let _ = input.parse::<Token![use]>()?;
                     let rust_path = input.parse()?;
                     let java_path = input.parse()?;
                     let _ = input.parse::<Token![;]>()?;
 
                     uses.push(JavaUse {
-                        use_tk,
                         rust_path,
                         java_path,
                     })
@@ -336,12 +106,11 @@ impl Parse for JavaClassDef {
 
 impl Parse for JavaClass {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let class_tk = input.parse()?;
+        let _ = input.parse::<kw::class>()?;
         let name = input.parse()?;
         let body = input.parse()?;
 
         Ok(Self {
-            class_tk,
             name,
             body,
         })
@@ -380,7 +149,7 @@ impl Parse for ClassBody {
                 if input.peek(kw::native) || input.peek2(kw::native) {
                     let static_tk = input.parse().ok();
 
-                    let native_tk = input.parse()?;
+                    let _ = input.parse::<kw::native>()?;
                     let signature = input.parse()?;
 
                     if !input.peek(syn::token::Brace) {
@@ -391,7 +160,6 @@ impl Parse for ClassBody {
 
                     natives.push(NativeFunction {
                         static_tk,
-                        native_tk,
                         signature,
                         body,
                     });
@@ -534,11 +302,6 @@ impl Parse for JavaCodeBlock {
         } else {
             return Err(syn::Error::new(input.span(), "expected '{', '[', or '('"))
         };
-//         Self::parse_unwrapped(delimiter, &input)
-//     }
-// }
-// impl JavaCodeBlock {
-//     fn parse_unwrapped(delimiter: Delimiter, input: ParseStream) -> syn::Result<Self> {
         let mut sections = Vec::new();
         let mut stream = TokenStream::new();
 
@@ -553,7 +316,7 @@ impl Parse for JavaCodeBlock {
                 && !(input.peek2(syn::token::Bracket) || input.peek2(Token![!]))
             {
                 split(&mut stream, &mut sections);
-                let _ = input.parse::<Token![#]>()?;
+                //let _ = input.parse::<Token![#]>()?;
                 let java_stmt = input.parse()?;
                 sections.push(CodeSection::Java(java_stmt));
             } else if input.cursor().any_group().is_some() {
@@ -573,22 +336,21 @@ impl Parse for JavaCodeBlock {
     }
 }
 
-impl JavaValueExpr {
-    fn maybe_parse(input: ParseStream) -> Option<syn::Result<Self>> {
-        
-
-        None
-    }
-}
-
-impl Parse for JavaValueExpr {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let span = input.span();
-        match Self::maybe_parse(input) {
-            None => Err(syn::Error::new(span, "failed to parse JavaValueExpr")),
-            Some(r) => r
+fn recover(input: ParseStream) -> syn::Result<TokenStream> {
+    input.step(|cursor| {
+        let mut stream = TokenStream::new();
+        let mut rest = *cursor;
+        while let Some((tt, next)) = rest.token_tree() {
+            stream.append(tt.clone());
+            match &tt {
+                TokenTree::Punct(p) if p.as_char() == ';' => {
+                    return Ok((stream, next))
+                }
+                _ => rest = next,
+            }
         }
-    }
+        return Ok((stream, rest))
+    })
 }
 
 impl Parse for JavaExpression {
@@ -601,16 +363,199 @@ impl Parse for JavaExpression {
                 let message;
                 parenthesized!(message in input);
                 let message = message.parse()?;
-                return Ok(Self::ThrowNew(JavaThrowNew { class, message }))
+                Ok(Self::ThrowNew(JavaThrowNew {
+                    class,
+                    message,
+                }))
             } else {
                 let value = input.parse()?;
-                return Ok(Self::ThrowObj(JavaThrowObj { value }))
+                Ok(Self::ThrowObj(JavaThrowObj {
+                    value,
+                }))
+            }
+        } else {
+            let expr: JavaExpr = input.parse()?;
+            if input.peek(Token![=]) {
+                match expr {
+                    JavaExpr::StaticFieldRead(JavaStaticFieldRead {
+                        class,
+                        field,
+                        signature,
+                    }) => {
+                        let _ = input.parse::<Token![=]>()?;
+                        let value = input.parse()?;
+                        return Ok(Self::StaticFieldWrite(JavaStaticFieldWrite {
+                            class,
+                            field,
+                            signature,
+                            value,
+                        }))
+                    },
+                    JavaExpr::FieldRead(JavaFieldRead {
+                        obj,
+                        field,
+                        signature,
+                    }) => {
+                        let _ = input.parse::<Token![=]>()?;
+                        let value = input.parse()?;
+                        return Ok(Self::FieldWrite(JavaFieldWrite {
+                            obj,
+                            field,
+                            signature,
+                            value,
+                        }))
+                    },
+                    JavaExpr::ArrayRead(ar) => {
+                        let JavaArrayRead {
+                            array,
+                            index,
+                            signature,
+                        } = *ar;
+                        let _ = input.parse::<Token![=]>()?;
+                        let value = input.parse()?;
+                        return Ok(Self::ArrayWrite(JavaArrayWrite {
+                            array,
+                            index,
+                            signature,
+                            value,
+                        }))
+                    },
+                    _ => {}
+                }
+            }
+            Ok(Self::Expr(expr))
+        }
+    }
+}
+
+impl Parse for JavaValueExpr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(syn::token::Brace) {
+            let block = input.parse()?;
+            Ok(Self::Block(block))
+        } else {
+            let expr = input.parse()?;
+            Ok(Self::Expr(expr))
+        }
+    }
+}
+
+impl Parse for JavaExpr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let _ = input.parse::<Token![#]>()?;
+        if input.peek(kw::new) {
+            let _ = input.parse::<kw::new>()?;
+            let class = input.parse()?;
+            let args;
+            parenthesized!(args in input);
+            let args = Punctuated::parse_terminated(&args)?;
+
+            let signature = if input.peek(Token![#]) {
+                Some(input.parse()?)
+            } else {
+                None
+            };
+
+            Ok(Self::New(JavaNew {
+                class,
+                args,
+                signature,
+            }))
+        } else if input.peek(kw::alloc) {
+            let _ = input.parse::<kw::alloc>()?;
+            let class = input.parse()?;
+            let p;
+            parenthesized!(p in input);
+            Ok(Self::Alloc(JavaAlloc { class }))
+        } else if input.peek2(syn::token::Bracket) {
+            let array = input.parse()?;
+            let index;
+            bracketed!(index in input);
+            let index = index.parse()?;
+            let signature = if input.peek(Token![#]) {
+                Some(input.parse()?)
+            } else {
+                None
+            };
+            Ok(Self::ArrayRead(Box::new(JavaArrayRead {
+                array,
+                index,
+                signature
+            })))
+        } else {
+            // java.lang.Class::func() #["..."]
+            // obj.method(...) #["..."]
+            // java.lang.Class::field #["..."]
+            // obj.field #["..."]
+            let mut dotted: DottedName = input.parse()?;
+            if input.peek(Token![::]) {
+                // function or static field
+                let _ = input.parse::<Token![::]>()?;
+                let name = input.parse()?;
+                if input.peek(syn::token::Paren) {
+                    let args;
+                    parenthesized!(args in input);
+                    let args = Punctuated::parse_terminated(&args)?;
+                    let signature = if input.peek(Token![#]) {
+                        Some(input.parse()?)
+                    } else {
+                        None
+                    };
+                    Ok(Self::StaticCall(JavaStaticCall {
+                        class: dotted,
+                        func: name,
+                        args,
+                        signature,
+                    }))
+                } else {
+                    let signature = if input.peek(Token![#]) {
+                        Some(input.parse()?)
+                    } else {
+                        None
+                    };
+                    Ok(Self::StaticFieldRead(JavaStaticFieldRead {
+                        class: dotted,
+                        field: name,
+                        signature
+                    }))
+                }
+            } else if dotted.0.len() == 2 {
+                let name = dotted.0.pop().unwrap();
+                let obj = dotted.0.pop().unwrap();
+                if input.peek(syn::token::Paren) {
+                    // method
+                    let args;
+                    parenthesized!(args in input);
+                    let args = Punctuated::parse_terminated(&args)?;
+                    let signature = if input.peek(Token![#]) {
+                        Some(input.parse()?)
+                    } else {
+                        None
+                    };
+                    Ok(Self::MethodCall(JavaMethodCall {
+                        obj,
+                        func: name,
+                        args,
+                        signature
+                    }))
+                } else {
+                    // field
+                    let signature = if input.peek(Token![#]) {
+                        Some(input.parse()?)
+                    } else {
+                        None
+                    };
+                    Ok(Self::FieldRead(JavaFieldRead {
+                        obj,
+                        field: name,
+                        signature
+                    }))
+                }
+            } else {
+                let ts = recover(input)?;
+                Ok(Self::Error(ts))
             }
         }
-
-
-        Err(syn::Error::new(input.span(), "failed to parse JavaExpression"))
-
     }
 }
 
