@@ -50,6 +50,7 @@ impl Parse for JavaClassDef {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let _ = input.parse::<kw::package>()?;
         let package: DottedName = input.parse()?;
+        let _ = input.parse::<Token![;]>()?;
 
         let mut imports = Vec::new();
         let mut uses = Vec::new();
@@ -57,7 +58,7 @@ impl Parse for JavaClassDef {
         let mut errors = Vec::new();
 
         while let is_import = input.peek(kw::import) && (is_import || input.peek(Token![use])) {
-            match (|| -> syn::Result<()> {
+            if let Err(e) = (|| -> syn::Result<()> {
                 if is_import {
                     let _ = input.parse::<kw::import>()?;
                     let item = input.parse()?;
@@ -81,22 +82,19 @@ impl Parse for JavaClassDef {
                 }
                 Ok(())
             })() {
-                Err(e) => {
-                    errors.push(e.to_compile_error());
-                    input.step(|cursor| {
-                        let mut rest = *cursor;
-                        while let Some((tt, next)) = rest.token_tree() {
-                            match tt {
-                                TokenTree::Punct(p) if p.as_char() == ';' => {
-                                    return Ok(((), next))
-                                },
-                                _ => rest = next,
-                            }
+                errors.push(e.to_compile_error());
+                input.step(|cursor| {
+                    let mut rest = *cursor;
+                    while let Some((tt, next)) = rest.token_tree() {
+                        match tt {
+                            TokenTree::Punct(p) if p.as_char() == ';' => {
+                                return Ok(((), next))
+                            },
+                            _ => rest = next,
                         }
-                        Ok(((), rest))
-                    })?;
-                }
-                Ok(()) => {}
+                    }
+                    Ok(((), rest))
+                })?;
             }
         }
 
@@ -153,7 +151,7 @@ impl Parse for ClassBody {
         }
 
         while !input.is_empty() {
-            match (|| -> syn::Result<()> {
+            if let Err(e) = (|| -> syn::Result<()> {
                 if input.peek(kw::native) || input.peek2(kw::native) {
                     let static_tk = input.parse().ok();
 
@@ -185,6 +183,7 @@ impl Parse for ClassBody {
                     let name = input.parse()?;
                     let _ = input.parse::<Token![:]>()?;
                     let typ = input.parse()?;
+                    let _ = input.parse::<Token![;]>()?;
 
                     fields.push(JavaField {
                         static_tk,
@@ -196,11 +195,8 @@ impl Parse for ClassBody {
                 }
                 Ok(())
             })() {
-                Err(e) => {
-                    errors.push(e.to_compile_error());
-                    recover(&input)?;
-                }
-                Ok(()) => {}
+                errors.push(e.to_compile_error());
+                recover(&input)?;
             }
         }
 

@@ -155,7 +155,7 @@ impl ToTokens for JniClass {
                 fn class_name() -> std::borrow::Cow<'static, jni::strings::JNIStr> {
                     std::borrow::Cow::Borrowed(jni::jni_str!(#class_name))
                 }
-                fn lookup_class<'class>(
+                fn lookup_class<'caller>(
                     env: &jni::Env<'_>,
                     loader_context: &jni::refs::LoaderContext,
                 ) -> jni::errors::Result<impl std::ops::Deref<Target = jni::refs::Global<jni::objects::JClass<'static>>> + 'caller> {
@@ -407,7 +407,7 @@ impl JavaFieldWrite {
             Some(JavaSignatureTag(signature)) => {
                 quote! {
                     env.set_field(
-                        #obj,
+                        &#obj,
                         jni::jni_str!(#field),
                         jni::jni_sig!(#signature),
                         {#value}.into(),
@@ -539,7 +539,7 @@ impl JavaMethodCall {
         });
         quote! {
             env.call_method(
-                #obj,
+                &#obj,
                 jni::jni_str!(#func),
                 jni::jni_sig!(#signature),
                 &[#(#args),*],
@@ -559,7 +559,7 @@ impl JavaStaticFieldRead {
         let Some(JavaSignatureTag(signature)) = signature else {
             return syn::Error::new(
                 field.span(),
-                "field type could not be determined, please add a tag: `Class::field #[\"...\"]`",
+                "static field type could not be determined, please add a tag: `Class::field #[\"...\"]`",
             ).to_compile_error();
         };
         let class = class.to_string();
@@ -583,8 +583,11 @@ impl JavaStaticFieldRead {
             )? #cast
         };
 
-        // TODO: local_cast
-        base
+        if let Some(local_cast) = sig.wrap_local_cast(&base, uses) {
+            local_cast
+        } else {
+            base
+        }
     }
 }
 
@@ -595,6 +598,35 @@ impl JavaFieldRead {
             field,
             signature,
         } = self;
+        let Some(JavaSignatureTag(signature)) = signature else {
+            return syn::Error::new(
+                field.span(),
+                "field type could not be determined, please add a tag: `obj.field #[\"...\"]`"
+            ).to_compile_error()
+        };
+        let sig = signature.value();
+        let sig = match JavaSig::parse(&sig) {
+            Ok(s) => s,
+            Err(e) => return syn::Error::new(
+                signature.span(),
+                e,
+            ).to_compile_error()
+        };
+        let field = field.to_string();
+        let cast = sig.return_cast();
+        let base = quote! {
+            env.get_field(
+                &#obj,
+                jni::jni_str!(#field),
+                jni::jni_sig!(#signature),
+            )? #cast
+        };
+
+        if let Some(local_cast) = sig.wrap_local_cast(&base, uses) {
+            local_cast
+        } else {
+            base
+        }
     }
 }
 
@@ -605,6 +637,24 @@ impl JavaArrayRead {
             index,
             signature,
         } = self;
+        let Some(JavaSignatureTag(signature)) = signature else {
+            return syn::Error::new(
+                array.span(),
+                "array element type could not be determined, please add a tag: `array[...] #[\"...\"]`"
+            ).to_compile_error()
+        };
+        let sig = signature.value();
+        let sig = match JavaSig::parse(&sig) {
+            Ok(s) => s,
+            Err(e) => return syn::Error::new(
+                signature.span(),
+                e,
+            ).to_compile_error()
+        };
+        syn::Error::new(
+            array.span(),
+            "array reads are not implemented yet"
+        ).to_compile_error()
     }
 }
 
@@ -615,12 +665,37 @@ impl JavaNew {
             args,
             signature,
         } = self;
+        let Some(JavaSignatureTag(signature)) = signature else {
+            return syn::Error::new(
+                class.0.last().unwrap().span(),
+                "ctor signature could not be determined, please add a tag: `new Class(...) #[\"(...)V\"]`",
+            ).to_compile_error()
+        };
+        let class = class.to_string();
+        let args = args.iter().map(|a| {
+            let a = a.output(uses);
+            quote!({#a}.into())
+        });
+
+        // TODO: type coersion with uses
+
+        quote! {
+            env.new_object(
+                jni::jni_str!(#class),
+                jni::jni_sig!(#signature),
+                &[#(#args),*],
+            )?
+        }
     }
 }
 
 impl JavaAlloc {
     fn output(&self, uses: &[JavaUse]) -> TokenStream {
         let class = self.class.to_string();
+        // TODO: type coersion with uses.
+        quote! {
+            env.alloc_object(jni::jni_str!(#class))?
+        }
     }
 }
 
@@ -710,18 +785,46 @@ impl<'l> JavaSig<'l> {
             JavaSig::J => quote!(.j()?),
             JavaSig::F => quote!(.f()?),
             JavaSig::D => quote!(.d()?),
-            JavaSig::L(_l) => {
-                // TODO: lookup local_cast type from uses
-                quote!(.l()?)
-            },
-            JavaSig::A(_a) => {
-                // TODO: array type lookup
-                quote!(.l()?)
-            },
+            JavaSig::L(_) => quote!(.l()?),
+            JavaSig::A(_) => quote!(.l()?),
+        }
+    }
+    fn wrap_local_cast(&self, base: &TokenStream, uses: &[JavaUse]) -> Option<TokenStream> {
+        match self {
+            Self::L(l) => {
+                if l == &["java", "lang", "String"] {
+                    return Some(
+                        quote! { jni::objects::JString::cast_local(env, {#base})? }
+                    )
+                }
+                for us in uses {
+                    if us.java_path == l {
+                        let p = &us.rust_path;
+                        return Some(quote! {
+                            #p::from({#base})
+                        })
+                    }
+                }
+                None
+            }
+            Self::A(a) => {
+                // TODO
+                None
+            }
+            _ => None,
         }
     }
 }
 
+impl PartialEq<&Vec<&str>> for DottedName {
+    fn eq(&self, other: &&Vec<&str>) -> bool {
+        other.len() == self.0.len()
+            && self.0.iter().zip(other.iter())
+            .all(|(s, o)| {
+                s == *o
+            })
+    }
+}
 
 
 impl JavaFnSignature {
@@ -985,9 +1088,15 @@ impl DottedName {
 
 impl ToTokens for PathSepName {
     fn to_tokens(&self, tokens: &mut TokenStream) {
+        let pre = match self.prefix {
+            crate::PathSepPrefix::None => quote!(),
+            crate::PathSepPrefix::This => quote!(self::),
+            crate::PathSepPrefix::Super => quote!(super::),
+            crate::PathSepPrefix::Crate => quote!(crate::),
+        };
         let parts = &self.parts;
         tokens.append_all(quote!{
-            #(#parts)::*
+            #pre #(#parts)::*
         });
     }
 }

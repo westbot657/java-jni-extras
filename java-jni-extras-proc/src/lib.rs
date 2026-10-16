@@ -9,8 +9,6 @@ pub(crate) mod parse;
 pub(crate) mod process;
 pub(crate) mod output;
 
-mod lib3;
-
 pub(crate) mod kw {
     use syn::custom_keyword;
 
