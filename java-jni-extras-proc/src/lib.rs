@@ -33,6 +33,7 @@ pub(crate) mod kw {
     custom_keyword!(alloc);
 }
 
+#[derive(PartialEq)]
 pub(crate) enum JavaType {
     Void,
     Boolean,
@@ -50,6 +51,17 @@ pub(crate) enum JavaType {
 
 #[derive(Clone)]
 pub(crate) struct DottedName(Punctuated<Ident, Token![.]>);
+
+impl PartialEq for DottedName {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && (
+            self.0
+                .iter()
+                .zip(other.0.iter())
+                .all(|(a, b)| a == b)
+        )
+    }
+}
 
 impl Display for DottedName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -79,7 +91,7 @@ pub(crate) struct JavaUse {
     pub(crate) java_path: DottedName,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub(crate) enum PathSepPrefix {
     #[default]
     None,
@@ -88,9 +100,10 @@ pub(crate) enum PathSepPrefix {
     Crate,
 }
 
+#[derive(Clone)]
 pub(crate) struct PathSepName {
     pub(crate) prefix: PathSepPrefix,
-    pub(crate) parts: Punctuated<Ident, Token![::]>,
+    pub(crate) parts: Vec<Ident>,
 }
 
 pub(crate) struct JavaClass {
@@ -318,6 +331,69 @@ pub(crate) struct JavaAlloc {
  *
  */
 
+/// Allows writing a java class binding with more ergonomic syntax,
+/// and simplifies many requirements such as class paths, and jni plumbing
+///
+/// Example usage:
+/// ```rs
+/// java_class! {
+///     package com.example.project;
+///
+///     // You can import classes to avoid writting fully qualified
+///     // class names later on.
+///     import org.joml.Vector3f;
+///
+///     // You can also use classes defined elsewhere.
+///     // This allows for functions to return the wrapper struct,
+///     // instead of just JObject.
+///     // the java classpath is also required for the same reason
+///     // that imports are allowed.
+///     use crate::class::com.example.project.Class2;
+///
+///     class MyClass {
+///         // class fields can be specified to simplify later code.
+///         // note: this is currently experimental, and field types here
+///         // apply to any java field access from any class.
+///         static val1: Vector3f;
+///         handle: long;
+///         val2: int;
+///
+///         // prefixing `native` before a function means the function
+///         // implementation is here in rust.
+///         // prefixing `static` makes this a static method.
+///         // static native functions always have implicit access to
+///         // 2 extra variables:
+///         // env: &mut Env<'c>
+///         // class: &JClass<'c>
+///         static native fn new_1(a: float, b: float) -> MyClass {
+///             let handle = ...;
+///             let this = #alloc MyClass();
+///
+///             // the {...} around handle are needed since
+///             // this allows for more complex rust code to be used,
+///             // such as function calls.
+///             #this.handle = {handle};
+///             #this.val2 = {0};
+///
+///             this
+///         }
+///
+///         // non-static native functions have implicit access to:
+///         // env: &mut Env<'c>
+///         // this: &JObject<'c>
+///         native fn increment() {
+///             let mut val2 = #this.val2;
+///             val2 += 1;
+///             #this.val2 = {val2};
+///         }
+///
+///         // non-native functions allow calling java functions directly in rust.
+///         // note that overloaded functions are impossible to define more than 1 of.
+///         static fn do_java_stuff(i: int) -> String;
+///         fn do_stuff2() -> int;
+///     }
+/// }
+/// ```
 #[proc_macro]
 pub fn java_class(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let class: JavaClassDef = parse_macro_input!(input);

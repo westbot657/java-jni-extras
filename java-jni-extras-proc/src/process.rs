@@ -38,7 +38,7 @@ impl DottedName {
 impl JavaClassDef {
     /// Resolves imports/uses and signature tags
     pub fn resolve(self) -> JniClass {
-        let Self { package, mut imports, uses, class, mut errors } = self;
+        let Self { package, mut imports, mut uses, class, mut errors } = self;
         let JavaClass { name, body } = class;
         let ClassBody { mut fields, mut bindings, mut natives, errors: mut e2 } = body;
         errors.append(&mut e2);
@@ -48,8 +48,10 @@ impl JavaClassDef {
         let class_name = format!("{}.{}", package_name, n);
         let classpath = package.classpath(&n);
 
-        imports.insert(0, JavaImport {
-            item: syn::parse_str(&class_name).unwrap()
+        uses.insert(0, JavaUse {
+            // this ends with '::' to simplify parsing (dw abt it)
+            rust_path: syn::parse_str(&format!("self::{n}::")).unwrap(),
+            java_path: syn::parse_str(&class_name).unwrap(),
         });
         imports.insert(0, JavaImport {
             item: parse_quote!(java.lang.String)
@@ -424,7 +426,7 @@ fn resolve_ctor_signature(class: &DottedName, signature: &mut Option<JavaSignatu
 }
 
 impl JavaType {
-    fn java_signature(&self) -> Cow<'static, str> {
+    pub(crate) fn java_signature(&self) -> Cow<'static, str> {
         Cow::Borrowed(match self {
             JavaType::Void => "V",
             JavaType::Boolean => "Z",

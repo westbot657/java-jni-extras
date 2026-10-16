@@ -31,7 +31,13 @@ impl Parse for PathSepName {
             PathSepPrefix::None
         };
 
-        let parts = Punctuated::parse_terminated(input)?;
+        let mut parts = Vec::new();
+
+        while input.peek2(Token![::]) {
+            let part = input.parse()?;
+            let _ = input.parse::<Token![::]>()?;
+            parts.push(part);
+        }
 
         Ok(Self {
             prefix,
@@ -62,9 +68,11 @@ impl Parse for JavaClassDef {
                     });
                 } else {
                     let _ = input.parse::<Token![use]>()?;
-                    let rust_path = input.parse()?;
-                    let java_path = input.parse()?;
+                    let mut rust_path: PathSepName = input.parse()?;
+                    let java_path: DottedName = input.parse()?;
                     let _ = input.parse::<Token![;]>()?;
+
+                    rust_path.parts.push(java_path.0.last().unwrap().clone());
 
                     uses.push(JavaUse {
                         rust_path,
