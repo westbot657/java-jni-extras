@@ -253,7 +253,7 @@ impl NativeFunction {
                     env: &mut jni::Env<'c>,
                     class: jni::objects::JClass<'c>,
                     #(#args),*
-                ) #arrow jni::errors::Result<#ret_typ> #body
+                ) -> jni::errors::Result<#ret_typ> #body
             }
         } else {
             quote! {
@@ -261,7 +261,7 @@ impl NativeFunction {
                     env: &mut jni::Env<'c>,
                     this: jni::objects::JObject<'c>,
                     #(#args),*
-                ) #arrow jni::errors::Result<#ret_typ> #body
+                ) -> jni::errors::Result<#ret_typ> #body
             }
         };
 
