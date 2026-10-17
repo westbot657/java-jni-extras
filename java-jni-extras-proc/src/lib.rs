@@ -197,6 +197,8 @@ pub(crate) enum JavaExpr {
 ///  <expr>
 ///  or
 ///  {...}
+///  or
+///  <single block-expression>
 pub(crate) enum JavaValueExpr {
     Expr(JavaExpr),
     Block(JavaCodeBlock),

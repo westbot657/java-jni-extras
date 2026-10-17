@@ -291,53 +291,63 @@ impl Parse for JavaType {
 
 impl Parse for JavaCodeBlock {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let (input, delimiter) = if input.peek(syn::token::Brace) {
-            let i;
-            braced!(i in input);
-            (i, Delimiter::Brace)
+        let (delimiter, sections) = if input.peek(syn::token::Brace) {
+            let inner;
+            braced!(inner in input);
+            (Delimiter::Brace, parse_sections(&inner, false)?)
         } else if input.peek(syn::token::Bracket) {
-            let i;
-            bracketed!(i in input);
-            (i, Delimiter::Bracket)
+            let inner;
+            bracketed!(inner in input);
+            (Delimiter::Bracket, parse_sections(&inner, false)?)
         } else if input.peek(syn::token::Paren) {
-            let i;
-            parenthesized!(i in input);
-            (i, Delimiter::Parenthesis)
+            let inner;
+            parenthesized!(inner in input);
+            (Delimiter::Parenthesis, parse_sections(&inner, false)?)
         } else {
-            return Err(syn::Error::new(input.span(), "expected '{', '[', or '('"))
+            // No delimiter: read until `;`, `,`, or the end of the current group/stream.
+            let start = input.span();
+            let sections = parse_sections(input, true)?;
+            if sections.is_empty() {
+                return Err(syn::Error::new(start, "expected an expression"));
+            }
+            (Delimiter::None, sections)
         };
-        let mut sections = Vec::new();
-        let mut stream = TokenStream::new();
 
-        fn split(stream: &mut TokenStream, sects: &mut Vec<CodeSection>) {
-            if !stream.is_empty() {
-                sects.push(CodeSection::Tokens(std::mem::take(stream)));
-            }
-        }
-
-        while !input.is_empty() {
-            if input.peek(Token![#])
-                && !(input.peek2(syn::token::Bracket) || input.peek2(Token![!]))
-            {
-                split(&mut stream, &mut sections);
-                //let _ = input.parse::<Token![#]>()?;
-                let java_stmt = input.parse()?;
-                sections.push(CodeSection::Java(java_stmt));
-            } else if input.cursor().any_group().is_some() {
-                split(&mut stream, &mut sections);
-                let block = input.parse()?;
-                sections.push(CodeSection::Block(block));
-            } else {
-                stream.extend(std::iter::once(input.parse::<TokenTree>()?));
-            }
-        }
-        split(&mut stream, &mut sections);
-
-        Ok(Self {
-            delimiter,
-            sections,
-        })
+        Ok(Self { delimiter, sections })
     }
+}
+
+fn parse_sections(input: ParseStream, stop_at_separator: bool) -> syn::Result<Vec<CodeSection>> {
+    let mut sections = Vec::new();
+    let mut stream = TokenStream::new();
+
+    fn split(stream: &mut TokenStream, sects: &mut Vec<CodeSection>) {
+        if !stream.is_empty() {
+            sects.push(CodeSection::Tokens(std::mem::take(stream)));
+        }
+    }
+
+    while !input.is_empty() {
+        if stop_at_separator && (input.peek(Token![;]) || input.peek(Token![,])) {
+            break;
+        }
+
+        if input.peek(Token![#])
+            && !(input.peek2(syn::token::Bracket) || input.peek2(Token![!]))
+        {
+            split(&mut stream, &mut sections);
+            let java_stmt = input.parse()?;
+            sections.push(CodeSection::Java(java_stmt));
+        } else if input.cursor().any_group().is_some() {
+            split(&mut stream, &mut sections);
+            let block = input.parse()?;
+            sections.push(CodeSection::Block(block));
+        } else {
+            stream.extend(std::iter::once(input.parse::<TokenTree>()?));
+        }
+    }
+    split(&mut stream, &mut sections);
+    Ok(sections)
 }
 
 fn recover(input: ParseStream) -> syn::Result<TokenStream> {
@@ -434,12 +444,12 @@ impl Parse for JavaExpression {
 
 impl Parse for JavaValueExpr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        if input.peek(syn::token::Brace) {
-            let block = input.parse()?;
-            Ok(Self::Block(block))
-        } else {
+        if input.peek(Token![#]) {
             let expr = input.parse()?;
             Ok(Self::Expr(expr))
+        } else {
+            let block = input.parse()?;
+            Ok(Self::Block(block))
         }
     }
 }

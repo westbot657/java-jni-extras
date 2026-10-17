@@ -6,28 +6,44 @@ which lets you define jni exports and wrapper functions in a java syntax.
 Example:
 ```rs
 
-java_class_decl! {
-    package com.example.project;
-    
-    class MyClass {
-        native int nativeAdd(int, int);
-        
-        String getName();
+java_class! {
+    package com.example;
+
+    import org.joml.Vector3f;
+    import org.joml.Vector4f;
+
+    use crate::com.example.OtherClass;
+
+    class ExampleClass {
+        value: float;
+        static next: int;
+
+        static native fn createNew(value: float) -> ExampleClass {
+            let ec = #alloc ExampleClass();
+            #ec.value = value;
+            ec
+        }
+
+        native fn add(other: float) {
+            let value = #this.value;
+            value += other;
+            #this.value = value;
+        }
     }
 }
 
-pub fn nativeAdd<'caller>(
-    env: &mut Env<'caller>,
-    this: JObject<'caller>,
-    a: jint,
-    b: jint,
-) -> Result<jint, jni::errors::Error> {
-    MyClass::_validate_interface(env)?; // Checks if all declared methods exist for the java-defined type
-    
-    let s: String = MyClass::getName(env, &this)?;
-    println!("instance name: {}", s);
-    
-    Ok(a + b)
-}
-
 ```
+
+Todo:
+-[ ] Type inference engine.
+    -[ ] Level 1: track local variable types where possible.
+    -[ ] Level 2: lookup external class types. (org.joml.* for example)
+    -[ ] Level 3: lookup rust macro declarations for type annotations.
+-[ ] Fix mutability issue in the scenario of: #this.x = #this.y (env is mutably borrowed twice)
+-[ ] import-aware signature tags / more ergonimic syntax.
+-[ ] fix all compile errors to report positions and not make the macro error.
+-[ ] allow 'Self' as class type in function signatures, new, and alloc.
+
+
+
+
