@@ -469,7 +469,7 @@ impl JavaThrowNew {
             return env.throw_new(
                 jni::jni_str!(#class),
                 jni::strings::JNIString::new({#message}),
-            )
+            ).map(|_| unreachable!())
         }
     }
 }
@@ -481,7 +481,7 @@ impl JavaThrowObj {
         quote! {
             return env.throw(
                 {#value}
-            )
+            ).map(|_| unreachable!())
         }
 
     }

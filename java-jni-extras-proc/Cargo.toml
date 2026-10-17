@@ -1,6 +1,6 @@
 [package]
 name = "java-jni-extras-proc"
-version = "0.2.1"
+version = "0.2.2"
 repository = "https://github.com/westbot657/java-jni-extras"
 authors = ["westbot <82739021+westbot657@users.noreply.github.com>"]
 description = "A collection of helper macros for use with jni"

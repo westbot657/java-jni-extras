@@ -363,13 +363,14 @@ fn recover(input: ParseStream) -> syn::Result<TokenStream> {
                 _ => rest = next,
             }
         }
-        return Ok((stream, rest))
+        Ok((stream, rest))
     })
 }
 
 impl Parse for JavaExpression {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        if input.peek(kw::throw) {
+        if input.peek(Token![#]) && input.peek2(kw::throw) {
+            let _ = input.parse::<Token![#]>()?;
             let _ = input.parse::<kw::throw>()?;
             if input.peek(kw::new) {
                 let _ = input.parse::<kw::new>()?;
