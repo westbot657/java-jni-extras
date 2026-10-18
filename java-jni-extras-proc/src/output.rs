@@ -355,6 +355,13 @@ impl JavaValueExpr {
     }
 }
 
+impl ToTokens for JavaValueExpr {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let o = self.output(&[]);
+        tokens.append_all(quote!{#o});
+    }
+}
+
 impl JavaStaticFieldWrite {
     fn output(&self, uses: &[JavaUse]) -> TokenStream {
         let Self {

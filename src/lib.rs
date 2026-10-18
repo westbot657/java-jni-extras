@@ -33,7 +33,7 @@ macro_rules! java_primitive {
             type JType = JPrimitiveArray<'c, <$T as JavaPrimitive>::P>;
             fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
                 let arr = JPrimitiveArray::<<$T as JavaPrimitive>::P>::new(env, self.len())?;
-                arr.set_region(env, 0, unsafe { std::mem::transmute(self) })?;
+                arr.set_region(env, 0, unsafe { std::mem::transmute::<&[$j], &[$T]>(self) })?;
                 Ok(arr)
             }
         }
@@ -42,7 +42,7 @@ macro_rules! java_primitive {
             type JType = JPrimitiveArray<'c, <$T as JavaPrimitive>::P>;
             fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
                 let arr = JPrimitiveArray::<<$T as JavaPrimitive>::P>::new(env, self.len())?;
-                arr.set_region(env, 0, unsafe { std::mem::transmute(self.as_slice()) })?;
+                arr.set_region(env, 0, unsafe { std::mem::transmute::<&[$j], &[$T]>(self.as_slice()) })?;
                 Ok(arr)
             }
         }
@@ -51,7 +51,7 @@ macro_rules! java_primitive {
             type JType = JPrimitiveArray<'c, <$T as JavaPrimitive>::P>;
             fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
                 let arr = JPrimitiveArray::<<$T as JavaPrimitive>::P>::new(env, self.len())?;
-                arr.set_region(env, 0, unsafe { std::mem::transmute(self.as_slice()) })?;
+                arr.set_region(env, 0, unsafe { std::mem::transmute::<&[$j], &[$T]>(self.as_slice()) })?;
                 Ok(arr)
             }
         }
@@ -74,21 +74,21 @@ impl<'c, T: Sized + JavaPrimitive> JavaTyped<'c> for T {
     }
 }
 
-impl<'c, 'r> JavaTyped<'c> for &str {
+impl<'c> JavaTyped<'c> for &str {
     type JType = JString<'c>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         env.new_string(self)
     }
 }
 
-impl<'c, 'r> JavaTyped<'c> for String {
+impl<'c> JavaTyped<'c> for String {
     type JType = JString<'c>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         env.new_string(self)
     }
 }
 
-impl<'c, 'r, T> JavaTyped<'c> for &[T]
+impl<'c, T> JavaTyped<'c> for &[T]
 where
     T: JavaObject + JavaTyped<'c> + Reference<Kind<'c> = T> + AsRef<JObject<'c>>,
     T::JType: 'c + Reference<Kind<'c> = T::JType> + AsRef<T::JType>,
@@ -106,7 +106,7 @@ where
     }
 }
 
-impl<'c, 'r, T, const N: usize> JavaTyped<'c> for &[T; N]
+impl<'c, T, const N: usize> JavaTyped<'c> for &[T; N]
 where
     T: JavaObject + JavaTyped<'c> + Reference<Kind<'c> = T> + AsRef<JObject<'c>>,
     T::JType: 'c + Reference<Kind<'c> = T::JType> + AsRef<T::JType>,
@@ -124,7 +124,7 @@ where
     }
 }
 
-impl<'c, 'r, T> JavaTyped<'c> for Vec<T>
+impl<'c, T> JavaTyped<'c> for Vec<T>
 where
     T: JavaObject + JavaTyped<'c> + Reference<Kind<'c> = T> + AsRef<JObject<'c>>,
     T::JType: 'c + Reference<Kind<'c> = T::JType> + AsRef<T::JType>,
@@ -141,7 +141,7 @@ where
     }
 }
 
-impl<'c, 'r> JavaTyped<'c> for &[&str] {
+impl<'c> JavaTyped<'c> for &[&str] {
     type JType = JObjectArray<'c, JString<'c>>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         let null = JString::null();
@@ -154,7 +154,7 @@ impl<'c, 'r> JavaTyped<'c> for &[&str] {
     }
 }
 
-impl<'c, 'r, const N: usize> JavaTyped<'c> for &[&str; N] {
+impl<'c, const N: usize> JavaTyped<'c> for &[&str; N] {
     type JType = JObjectArray<'c, JString<'c>>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         let null = JString::null();
@@ -167,7 +167,7 @@ impl<'c, 'r, const N: usize> JavaTyped<'c> for &[&str; N] {
     }
 }
 
-impl<'c, 'r> JavaTyped<'c> for Vec<&str> {
+impl<'c> JavaTyped<'c> for Vec<&str> {
     type JType = JObjectArray<'c, JString<'c>>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         let null = JString::null();
@@ -180,7 +180,7 @@ impl<'c, 'r> JavaTyped<'c> for Vec<&str> {
     }
 }
 
-impl<'c, 'r> JavaTyped<'c> for &[String] {
+impl<'c> JavaTyped<'c> for &[String] {
     type JType = JObjectArray<'c, JString<'c>>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         let null = JString::null();
@@ -193,7 +193,7 @@ impl<'c, 'r> JavaTyped<'c> for &[String] {
     }
 }
 
-impl<'c, 'r, const N: usize> JavaTyped<'c> for &[String; N] {
+impl<'c, const N: usize> JavaTyped<'c> for &[String; N] {
     type JType = JObjectArray<'c, JString<'c>>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         let null = JString::null();
@@ -206,7 +206,7 @@ impl<'c, 'r, const N: usize> JavaTyped<'c> for &[String; N] {
     }
 }
 
-impl<'c, 'r> JavaTyped<'c> for Vec<String> {
+impl<'c> JavaTyped<'c> for Vec<String> {
     type JType = JObjectArray<'c, JString<'c>>;
     fn into_java<'local>(self, env: &'local mut Env<'c>) -> jni::errors::Result<Self::JType> {
         let null = JString::null();

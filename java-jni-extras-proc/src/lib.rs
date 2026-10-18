@@ -403,6 +403,11 @@ pub fn java_class(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }.into()
 }
 
+#[proc_macro]
+pub fn java_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let expr: JavaValueExpr = parse_macro_input!(input);
+    quote!{ #expr }.into()
+}
 
 
 
